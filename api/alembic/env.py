@@ -1,5 +1,10 @@
 import asyncio
+import os
 from logging.config import fileConfig
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from alembic import context
 from sqlalchemy import pool
@@ -10,6 +15,15 @@ from db import models  # noqa: F401 — регистрирует модели в
 from db.db import Base
 
 config = context.config
+
+# URL БД — только из DATABASE_URL, никаких дефолтов со sqlite
+database_url = os.getenv("DATABASE_URL")
+if not database_url:
+    raise RuntimeError(
+        "DATABASE_URL не задана. Укажи её в .env, "
+        "например: postgresql+asyncpg://postgres:postgres@localhost:5432/hackathon"
+    )
+config.set_main_option("sqlalchemy.url", database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

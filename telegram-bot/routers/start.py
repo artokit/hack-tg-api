@@ -1,32 +1,44 @@
-from services.user_service import service as user_service
-from services.departament_service import service as departament_service
-from aiogram.filters import Command
-from aiogram.types import Message
-from keyboards import start as keyboards_start
 from aiogram import Router
-import utils
+from aiogram.filters import Command, CommandStart
+from aiogram.types import Message
+
+from keyboards import start as start_keyboard
+from services.user_service import user_service
 
 router = Router()
 
 
-@router.message(Command("start"))
+@router.message(CommandStart())
 async def start(message: Message):
-    # 4. Пишет админ тг бота и он может посмотреть либо все возможные департаменты, либо изменить их, либо создать новый +
-    if utils.user_is_admin(message.chat.id):
-        return await message.answer("Привет!\nВыберите действие.", markup=keyboards_start.get_admin_start_keyboard())
-    # Здесь может быть несколкьо сценариев.
-    # 1. Пишет хз кто и ему в ответ приходит что он не ялвляется сотрудником +
-    # 2. Пишет начальник департамента и ему отправляется клава с добавление новых документов
-    # 3. Пишет обычный сотрудник и ему отправляется текст типо "Напишите вопрос который вас интересует"
-    user = await user_service.get_user_by_id(message.chat.id)
-
+    user = await user_service.get_user_by_telegram_id(message.from_user.id)
     if user is None:
-        return await message.answer("Вас нету в системе :(\nВозможно вас ещё не добавили ни в один из отделов. Обратитесь к своему руководителю отдела")
+        await user_service.create_user(
+            message.from_user.id, message.from_user.username
+        )
+    await message.answer(
+        f"Здравствуйте! Вас приветствует чат-бот БАРС ГРУП СПАСИТЕ ПОМОГИТЕ.\n",
+        reply_markup=start_keyboard.get_admin_start_keyboard(),
+    )
 
-    ids = await departament_service.get_user_departments_ids_by_user_id(message.chat.id)
 
-    if not ids:
-        return await message.answer(
-            "Вас нету в системе :(\nВозможно вас ещё не добавили ни в один из отделов. Обратитесь к своему руководителю отдела")
+@router.message(Command("me"))
+async def cmd_me(message: Message):
+    """Получает пользователя по id через GET /users/{id}.
 
-    kb = keyboards_start.
+    Использование: /me 1
+    """
+    args = (message.text or "").split()
+    if len(args) < 2 or not args[1].isdigit():
+        await message.answer("Укажи id: /me <id>")
+        return
+
+    user = await user_service.get_user_by_id(int(args[1]))
+    if user is None:
+        await message.answer(f"Пользователь с id {args[1]} не найден")
+        return
+
+    await message.answer(
+        f"id: {user.id}\n"
+        f"telegram_user_id: {user.telegram_user_id}\n"
+        f"username: {user.username or '—'}"
+    )
