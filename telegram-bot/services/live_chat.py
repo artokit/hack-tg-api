@@ -1,10 +1,9 @@
 import asyncio
 import logging
-from contextlib import aclosing, suppress
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
-import httpx
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message
 
@@ -41,44 +40,28 @@ class LiveChat:
         turn = ActiveReply()
         self.active[user_id] = turn
         display = ReplyDisplay(message)
-        typing = asyncio.create_task(display.typing())
         try:
-            await self._reply(display, user_id, text, turn)
+            async with display.typing():
+                answer = await self._answer(user_id, text, turn)
+            await display.answer(answer)
+        except TelegramAPIError as exc:
+            logger.warning("Telegram reply delivery failed (%s)", type(exc).__name__)
         finally:
-            typing.cancel()
             turn.accepting = False
             del self.active[user_id]
             turn.ready.set()
             turn.done.set()
-            with suppress(asyncio.CancelledError):
-                await typing
 
-    async def _reply(
-        self, display: ReplyDisplay, user_id: int, text: str, turn: ActiveReply
-    ) -> None:
-        try:
-            async with aclosing(
-                self.client.stream(user_id, turn.turn_id, text)
-            ) as events:
-                async for kind, content in events:
-                    match kind:
-                        case "ready":
-                            turn.accepting = True
-                            turn.ready.set()
-                        case "text":
-                            await display.draft(content)
-                        case "draft_reset":
-                            display.restart_draft()
-                        case "answer":
-                            turn.accepting = False
-                            await display.answer(content)
-                            return
-                        case "error":
-                            raise AgentStreamError(content)
-            raise AgentStreamError("missing final answer")
-        except (AgentStreamError, httpx.HTTPError):
-            await display.clear_draft()
-            raise
-        except TelegramAPIError as exc:
-            logger.warning("Telegram reply delivery failed (%s)", type(exc).__name__)
-            await display.clear_draft()
+    async def _answer(self, user_id: int, text: str, turn: ActiveReply) -> str:
+        async with aclosing(self.client.stream(user_id, turn.turn_id, text)) as events:
+            async for kind, content in events:
+                match kind:
+                    case "ready":
+                        turn.accepting = True
+                        turn.ready.set()
+                    case "answer":
+                        turn.accepting = False
+                        return content
+                    case "error":
+                        raise AgentStreamError(content)
+        raise AgentStreamError("missing final answer")

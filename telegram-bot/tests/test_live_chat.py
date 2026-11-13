@@ -34,11 +34,9 @@ def update(text: str, message_id: int) -> Update:
 
 def test_telegram_steers_a_running_reply_and_formats_one_final_answer() -> None:
     async def scenario() -> None:
-        draft_ready = asyncio.Event()
         typing_ready = asyncio.Event()
         steer_received = asyncio.Event()
         paths: list[str] = []
-        drafts: list[tuple[int, str]] = []
         answers: list[str] = []
         turn_id: str | None = None
 
@@ -51,11 +49,10 @@ def test_telegram_steers_a_running_reply_and_formats_one_final_answer() -> None:
                     case "sendChatAction":
                         assert method.action == ChatAction.TYPING
                         typing_ready.set()
-                    case "sendMessageDraft":
-                        drafts.append((method.draft_id, method.text))
-                        draft_ready.set()
                     case "sendRichMessage":
                         answers.append(method.rich_message.markdown)
+                    case _:
+                        raise AssertionError(method.__api_method__)
                 return True
 
             async def stream_content(self, *args, **kwargs):
@@ -65,11 +62,7 @@ def test_telegram_steers_a_running_reply_and_formats_one_final_answer() -> None:
         class AgentEvents(httpx.AsyncByteStream):
             async def __aiter__(self):
                 yield frame("ready")
-                await typing_ready.wait()
-                yield frame("text", "Первый черновик")
                 await steer_received.wait()
-                yield frame("draft_reset")
-                yield frame("text", "Новый черновик")
                 yield frame("answer", "**Итог с уточнением**")
 
         def handle(request: httpx.Request) -> httpx.Response:
@@ -99,7 +92,8 @@ def test_telegram_steers_a_running_reply_and_formats_one_final_answer() -> None:
             first = tasks.create_task(
                 dispatcher.feed_update(bot, update("Как оформить?", 1), live_chat=chat)
             )
-            await asyncio.wait_for(draft_ready.wait(), timeout=3)
+            await asyncio.wait_for(typing_ready.wait(), timeout=3)
+            assert not answers
             await asyncio.wait_for(
                 dispatcher.feed_update(
                     bot, update("Только три пункта", 2), live_chat=chat
@@ -109,7 +103,6 @@ def test_telegram_steers_a_running_reply_and_formats_one_final_answer() -> None:
             await asyncio.wait_for(first, timeout=3)
 
         assert paths == ["/agent/chat/stream", "/agent/chat/steer"]
-        assert drafts == [(1, "Первый черновик")]
         assert answers == ["**Итог с уточнением**"]
         assert not chat.active
 

@@ -5,16 +5,9 @@ from dataclasses import dataclass, field
 from typing import Literal
 from uuid import UUID
 
-from pydantic_ai import AgentRunResultEvent, RunContext, UsageLimits
+from pydantic_ai import RunContext, UsageLimits
 from pydantic_ai.capabilities import Hooks
 from pydantic_ai.exceptions import UnexpectedModelBehavior, UserError
-from pydantic_ai.messages import (
-    EnqueuedMessagesEvent,
-    PartDeltaEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
-)
 
 from services.chat import ChatService
 
@@ -27,7 +20,7 @@ class TurnClosed(Exception):
 
 @dataclass(frozen=True)
 class TurnEvent:
-    kind: Literal["ready", "text", "draft_reset", "answer"]
+    kind: Literal["ready", "answer"]
     text: str = ""
 
 
@@ -67,7 +60,7 @@ class LiveTurns:
     async def stream(
         self, user_id: int, turn_id: UUID, text: str
     ) -> AsyncIterator[TurnEvent]:
-        events: asyncio.Queue[TurnEvent | Exception | None] = asyncio.Queue(maxsize=32)
+        events: asyncio.Queue[TurnEvent | Exception | None] = asyncio.Queue()
 
         async def produce() -> None:
             try:
@@ -101,32 +94,20 @@ class LiveTurns:
             turn = ActiveTurn(turn_id)
             self.active[user_id] = turn
             try:
-                await events.put(TurnEvent("ready"))
+                events.put_nowait(TurnEvent("ready"))
                 conversation = await work.conversations.load(user_id)
-                result = None
-                async with self.chat.agent.run_stream_events(
+                result = await self.chat.agent.run(
                     text,
                     conversation=conversation,
                     capabilities=[Hooks(before_run=turn.bind)],
                     usage_limits=UsageLimits(request_limit=None),
-                ) as stream:
-                    async for event in stream:
-                        match event:
-                            case AgentRunResultEvent(result=completed):
-                                result = completed
-                            case EnqueuedMessagesEvent():
-                                await events.put(TurnEvent("draft_reset"))
-                            case PartStartEvent(part=TextPart(content=content)):
-                                await events.put(TurnEvent("text", content))
-                            case PartDeltaEvent(
-                                delta=TextPartDelta(content_delta=content)
-                            ):
-                                await events.put(TurnEvent("text", content))
-                if result is None or not result.output.strip():
+                )
+                answer = result.output.strip()
+                if not answer:
                     raise UnexpectedModelBehavior(
                         "The chat model returned an empty answer"
                     )
                 await work.conversations.save(user_id, result.conversation)
             finally:
                 del self.active[user_id]
-        await events.put(TurnEvent("answer", result.output.strip()))
+        events.put_nowait(TurnEvent("answer", answer))

@@ -100,13 +100,13 @@ def test_conversation_lifecycle(configure_api, monkeypatch: pytest.MonkeyPatch) 
         assert chat(client, 10001, "новый").json() == {"answer": "новый"}
 
 
-def test_steer_joins_the_active_stream(
+def test_steer_joins_the_active_turn(
     configure_api, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     entered, release = Event(), Event()
     calls = 0
 
-    async def stream(messages, _info):
+    async def reply(messages, _info):
         nonlocal calls
         calls += 1
         prompts = [
@@ -116,17 +116,17 @@ def test_steer_joins_the_active_stream(
             if isinstance(part, UserPromptPart)
         ]
         if calls == 1:
-            yield "Первый черновик"
+            assert prompts == ["Исходный вопрос"]
             entered.set()
             assert await asyncio.to_thread(release.wait, 10)
-        else:
-            assert prompts == ["Исходный вопрос", "Только три пункта"]
-            yield "Итог с уточнением"
+            return ModelResponse(parts=[TextPart("Промежуточный ответ")])
+        assert prompts == ["Исходный вопрос", "Только три пункта"]
+        return ModelResponse(parts=[TextPart("Итог с уточнением")])
 
     monkeypatch.setattr(
         main,
         "build_agent",
-        lambda settings, client: Agent(FunctionModel(stream_function=stream)),
+        lambda settings, client: Agent(FunctionModel(reply)),
     )
     user_id = 10003
     data = {
@@ -189,13 +189,7 @@ def test_steer_joins_the_active_stream(
             for frame in response.text.split("\n\n")
             if (lines := frame.splitlines()) and lines[0].startswith("event: ")
         ]
-        assert [kind for kind, _ in events] == [
-            "ready",
-            "text",
-            "draft_reset",
-            "text",
-            "answer",
-        ]
+        assert [kind for kind, _ in events] == ["ready", "answer"]
         assert events[-1] == ("answer", "Итог с уточнением")
         assert (
             client.post("/agent/chat/steer", headers=HEADERS, json=data).status_code
