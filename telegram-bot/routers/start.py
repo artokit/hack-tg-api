@@ -1,32 +1,68 @@
-from services.user_service import service as user_service
-from services.departament_service import service as departament_service
-from aiogram.filters import Command
-from aiogram.types import Message
-from keyboards import start as keyboards_start
+import logging
+
+import httpx
 from aiogram import Router
-import utils
+from aiogram.filters import Command, CommandStart
+from aiogram.types import Message
 
-router = Router()
+logger = logging.getLogger(__name__)
+router = Router(name="start")
 
 
-@router.message(Command("start"))
-async def start(message: Message):
-    # 4. Пишет админ тг бота и он может посмотреть либо все возможные департаменты, либо изменить их, либо создать новый +
-    if utils.user_is_admin(message.chat.id):
-        return await message.answer("Привет!\nВыберите действие.", markup=keyboards_start.get_admin_start_keyboard())
-    # Здесь может быть несколкьо сценариев.
-    # 1. Пишет хз кто и ему в ответ приходит что он не ялвляется сотрудником +
-    # 2. Пишет начальник департамента и ему отправляется клава с добавление новых документов
-    # 3. Пишет обычный сотрудник и ему отправляется текст типо "Напишите вопрос который вас интересует"
-    user = await user_service.get_user_by_id(message.chat.id)
+@router.message(CommandStart())
+async def cmd_start(message: Message, api_client: httpx.AsyncClient) -> None:
+    if message.from_user is None:
+        return
+    try:
+        response = await api_client.post(
+            "users",
+            json={
+                "telegram_user_id": message.from_user.id,
+                "username": message.from_user.username,
+            },
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.warning("Registration failed (%s)", type(exc).__name__)
+        await message.answer(
+            "Сейчас не получается зарегистрироваться. Попробуй чуть позже."
+        )
+        return
+    user = response.json()
+    await message.answer(
+        f"Привет, {message.from_user.full_name}!\n"
+        f"Ты сохранён в базе, твой id: {user['id']}"
+    )
 
-    if user is None:
-        return await message.answer("Вас нету в системе :(\nВозможно вас ещё не добавили ни в один из отделов. Обратитесь к своему руководителю отдела")
 
-    ids = await departament_service.get_user_departments_ids_by_user_id(message.chat.id)
-
-    if not ids:
-        return await message.answer(
-            "Вас нету в системе :(\nВозможно вас ещё не добавили ни в один из отделов. Обратитесь к своему руководителю отдела")
-
-    kb = keyboards_start.
+@router.message(Command("me"))
+async def cmd_me(message: Message, api_client: httpx.AsyncClient) -> None:
+    args = (message.text or "").split()
+    if (
+        len(args) < 2
+        or not args[1].isascii()
+        or not args[1].isdigit()
+        or len(args[1]) > 10
+    ):
+        await message.answer("Укажи id: /me <id>")
+        return
+    user_id = int(args[1])
+    try:
+        response = await api_client.get(f"users/{user_id}")
+        if response.status_code == 404:
+            await message.answer(f"Пользователь с id {user_id} не найден")
+            return
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.warning("User lookup failed (%s)", type(exc).__name__)
+        await message.answer(
+            "Сейчас не получается получить пользователя. Попробуй чуть позже."
+        )
+        return
+    user = response.json()
+    username = user.get("username") or "—"
+    await message.answer(
+        f"id: {user['id']}\n"
+        f"telegram_user_id: {user['telegram_user_id']}\n"
+        f"username: {username}"
+    )

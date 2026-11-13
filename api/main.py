@@ -1,49 +1,36 @@
-from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
-from db.db import get_async_session
-from db.models import User
+from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-app = FastAPI(title="Hackathon API")
-
-
-class UserCreate(BaseModel):
-    telegram_user_id: int
-    username: str | None = None
+from agents.support import build_agent, build_model_client
+from config import Settings
+from db.db import create_engine
+from routes import chat, users
+from services.chat import ChatService
+from services.users import UserService
 
 
-class UserRead(UserCreate):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-
-
-@app.post("/users", response_model=UserRead)
-async def create_user(
-    data: UserCreate,
-    session: AsyncSession = Depends(get_async_session),
-):
-    existing = await session.scalar(
-        select(User).where(User.telegram_user_id == data.telegram_user_id)
-    )
-    if existing is not None:
-        return existing
-
-    user = User(**data.model_dump())
-    session.add(user)
-    await session.commit()
-    await session.refresh(user)
-    return user
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = Settings()
+    engine = create_engine(settings.database_url.get_secret_value())
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with build_model_client(settings) as client:
+            app.state.agent_api_token = (
+                settings.agent_api_token.get_secret_value().encode()
+            )
+            app.state.user_service = UserService(sessions)
+            app.state.chat_service = ChatService(
+                build_agent(settings, client), sessions
+            )
+            yield
+    finally:
+        await engine.dispose()
 
 
-@app.get("/users/{user_id}", response_model=UserRead)
-async def get_user(
-    user_id: int,
-    session: AsyncSession = Depends(get_async_session),
-):
-    user = await session.get(User, user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
+app = FastAPI(title="Hackathon API", lifespan=lifespan)
+app.include_router(users.router)
+app.include_router(chat.router)
