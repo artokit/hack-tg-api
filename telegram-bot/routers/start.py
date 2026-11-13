@@ -28,10 +28,9 @@ async def cmd_start(message: Message, api_client: httpx.AsyncClient) -> None:
             "Сейчас не получается зарегистрироваться. Попробуй чуть позже."
         )
         return
-    user = response.json()
     await message.answer(
         f"Привет, {message.from_user.full_name}!\n"
-        f"Ты сохранён в базе, твой id: {user['id']}"
+        "Напиши свой вопрос. Чтобы начать новый диалог, отправь /reset."
     )
 
 
