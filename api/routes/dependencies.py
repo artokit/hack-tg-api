@@ -5,6 +5,7 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from services.chat import ChatService
+from services.live_turns import LiveTurns
 from services.users import UserService
 
 bearer = HTTPBearer(auto_error=False)
@@ -25,6 +26,10 @@ def require_bot(
 
 def get_chat_service(request: Request) -> ChatService:
     return request.app.state.chat_service
+
+
+def get_live_turns(request: Request) -> LiveTurns:
+    return request.app.state.live_turns
 
 
 def get_user_service(request: Request) -> UserService:

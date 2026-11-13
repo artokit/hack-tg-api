@@ -9,6 +9,7 @@ from config import Settings
 from db.db import create_engine
 from routes import chat, users
 from services.chat import ChatService
+from services.live_turns import LiveTurns
 from services.users import UserService
 
 
@@ -26,6 +27,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.chat_service = ChatService(
                 build_agent(settings, client), sessions
             )
+            app.state.live_turns = LiveTurns(app.state.chat_service)
             yield
     finally:
         await engine.dispose()

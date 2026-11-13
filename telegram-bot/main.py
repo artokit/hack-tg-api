@@ -7,6 +7,7 @@ from aiogram import Bot, Dispatcher
 from config import Settings
 from routers import agent, start
 from services.agent_client import AgentClient
+from services.live_chat import LiveChat
 
 
 async def main() -> None:
@@ -19,13 +20,13 @@ async def main() -> None:
         bot.context(),
         httpx.AsyncClient(base_url=str(settings.api_url), timeout=55) as client,
     ):
+        agent_client = AgentClient(client, settings.agent_api_token.get_secret_value())
         await dispatcher.start_polling(
             bot,
             close_bot_session=False,
             api_client=client,
-            agent_client=AgentClient(
-                client, settings.agent_api_token.get_secret_value()
-            ),
+            agent_client=agent_client,
+            live_chat=LiveChat(agent_client),
         )
 
 

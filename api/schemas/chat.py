@@ -1,4 +1,5 @@
 from typing import Annotated
+from uuid import UUID
 
 from pydantic import BaseModel, Field, StringConstraints
 
@@ -17,3 +18,7 @@ class ChatRequest(ResetRequest):
 
 class ChatResponse(BaseModel):
     answer: str
+
+
+class TurnMessage(ChatRequest):
+    turn_id: UUID

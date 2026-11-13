@@ -1,10 +1,12 @@
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from pydantic_ai import Agent, UsageLimits
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from utils.unit_of_work import unit_of_work
+from utils.unit_of_work import UnitOfWork, unit_of_work
 
 TURN_TIMEOUT_SECONDS = 45
 
@@ -20,13 +22,20 @@ class ChatService:
         self.agent = agent
         self.sessions = sessions
 
-    async def reply(self, telegram_user_id: int, text: str) -> str:
+    @asynccontextmanager
+    async def locked_conversation(
+        self, telegram_user_id: int, *, timeout: float = TURN_TIMEOUT_SECONDS
+    ) -> AsyncIterator[UnitOfWork]:
         async with (
-            asyncio.timeout(TURN_TIMEOUT_SECONDS),
+            asyncio.timeout(timeout),
             unit_of_work(self.sessions) as work,
         ):
             if not await work.try_lock_conversation(telegram_user_id):
                 raise ConversationBusy
+            yield work
+
+    async def reply(self, telegram_user_id: int, text: str) -> str:
+        async with self.locked_conversation(telegram_user_id) as work:
             conversation = await work.conversations.load(telegram_user_id)
             result = await self.agent.run(
                 text,
@@ -40,10 +49,5 @@ class ChatService:
         return answer
 
     async def reset(self, telegram_user_id: int) -> None:
-        async with (
-            asyncio.timeout(TURN_TIMEOUT_SECONDS),
-            unit_of_work(self.sessions) as work,
-        ):
-            if not await work.try_lock_conversation(telegram_user_id):
-                raise ConversationBusy
+        async with self.locked_conversation(telegram_user_id) as work:
             await work.conversations.delete(telegram_user_id)
