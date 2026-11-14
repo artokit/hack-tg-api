@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import logging
 import math
 from urllib.parse import urlsplit
 from uuid import UUID, uuid5
@@ -12,6 +13,7 @@ from models.rag import RagUnavailable
 
 VECTOR_SIZE = 4096
 PAGE_SIZE = 24
+log = logging.getLogger(__name__)
 POINT_NAMESPACE = UUID("345d918b-0f30-4213-88e5-fd11e9187512")
 QUERY_INSTRUCTION = (
     "Given a question, retrieve documentation passages containing the exact entity, "
@@ -40,28 +42,50 @@ class RagIndex:
         ).encode()).hexdigest()
 
     async def vectors(self, texts: list[str]) -> list[list[float]]:
-        try:
-            response = await self.http.post(
-                self.embedding, headers=self.embedding_headers,
-                json={
-                    "model": self.model, "input": texts, "encoding_format": "float",
-                    **self.embedding_options,
-                },
-            )
-            response.raise_for_status()
-            data = sorted(response.json()["data"], key=lambda row: row["index"])
-            if [row["index"] for row in data] != list(range(len(texts))):
-                raise ValueError("incorrect vector indices")
-            vectors = [row["embedding"] for row in data]
-            if any(
-                len(vector) != VECTOR_SIZE or not all(math.isfinite(value) for value in vector)
-                or not any(vector)
-                for vector in vectors
-            ):
-                raise ValueError("incorrect vector values or dimension")
-            return vectors
-        except (httpx.HTTPError, KeyError, TypeError, ValueError, OverflowError) as error:
-            raise RagUnavailable("embedding_unavailable") from error
+        for attempt in range(3):
+            try:
+                return await self.request_vectors(texts)
+            except httpx.HTTPStatusError as error:
+                status = error.response.status_code
+                log.warning("RAG embedding request returned %s (batch=%s)", status, len(texts))
+                if len(texts) > 1 and status in (408, 413, 429, 500, 502, 503, 504):
+                    break
+                if status not in (408, 429, 500, 502, 503, 504) or attempt == 2:
+                    raise RagUnavailable("embedding_unavailable") from error
+            except httpx.TransportError as error:
+                log.warning("RAG embedding transport error %s (batch=%s)", type(error).__name__, len(texts))
+                if len(texts) > 1:
+                    break
+                if attempt == 2:
+                    raise RagUnavailable("embedding_unavailable") from error
+            except (KeyError, TypeError, ValueError, OverflowError) as error:
+                log.warning("RAG embedding response validation failed (%s)", type(error).__name__)
+                raise RagUnavailable("embedding_unavailable") from error
+            await asyncio.sleep(2 ** attempt)
+        middle = len(texts) // 2
+        await asyncio.sleep(1)
+        return [*await self.vectors(texts[:middle]), *await self.vectors(texts[middle:])]
+
+    async def request_vectors(self, texts: list[str]) -> list[list[float]]:
+        response = await self.http.post(
+            self.embedding, headers=self.embedding_headers,
+            json={
+                "model": self.model, "input": texts, "encoding_format": "float",
+                **self.embedding_options,
+            },
+        )
+        response.raise_for_status()
+        data = sorted(response.json()["data"], key=lambda row: row["index"])
+        if [row["index"] for row in data] != list(range(len(texts))):
+            raise ValueError("incorrect vector indices")
+        vectors = [row["embedding"] for row in data]
+        if any(
+            len(vector) != VECTOR_SIZE or not all(math.isfinite(value) for value in vector)
+            or not any(vector)
+            for vector in vectors
+        ):
+            raise ValueError("incorrect vector values or dimension")
+        return vectors
 
     async def request(self, method: str, path: str = "", body=None, *, allow_missing=False):
         try:
