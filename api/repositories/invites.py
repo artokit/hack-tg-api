@@ -1,9 +1,11 @@
 from uuid import UUID
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Invite
+from db.models import Employee, Invite
+from repositories.employees import EmployeeRepository
 
 
 class InviteRepository:
@@ -37,9 +39,31 @@ class InviteRepository:
         await self._session.delete(invite)
         await self._session.commit()
 
-    async def consume(self, invite: Invite) -> None:
+    async def lock_for_accept(self, invite_id: UUID) -> Invite | None:
+        return await self._session.scalar(
+            select(Invite).where(Invite.id == invite_id).with_for_update()
+        )
+
+    async def accept(
+        self,
+        invite: Invite,
+        telegram_id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+    ) -> Employee:
+        employees = EmployeeRepository(self._session)
+        employee = employees.add(telegram_id, first_name, last_name, username)
         if invite.count_of_use == 1:
             await self._session.delete(invite)
         else:
             invite.count_of_use -= 1
-        await self._session.commit()
+        try:
+            await self._session.commit()
+        except IntegrityError as error:
+            await self._session.rollback()
+            if await employees.get_by_telegram_id(telegram_id) is not None:
+                raise ValueError("Employee already exists") from error
+            raise
+        await self._session.refresh(employee)
+        return employee

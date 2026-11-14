@@ -1,22 +1,33 @@
 import { AgentRunError, init } from '@flue/runtime';
-import { Api } from 'grammy';
+import { type FSMFlavor, type StateSession, onState, stateMiddleware } from '@kalutskii/grammy-fsm';
+import { type Api, type SessionFlavor, Composer, Context } from 'grammy';
 
 import { Bars } from './agents/bars.js';
 import { responseSubmission } from './db.js';
-import { acceptInvite } from './invites-api.js';
+import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employees-api.js';
 import { renderRag } from './rag.js';
 import { TelegramOutput } from './telegram-output.js';
 import { type PendingUpdate, TelegramStore } from './telegram-store.js';
 
 const unavailable = 'Сейчас не получается ответить. Попробуй ещё раз чуть позже.';
+const promptName = 'Введите имя:';
+const State = { AwaitName: 'await_name' } as const;
+const inviteIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+type UpdateContext = Context & SessionFlavor<StateSession> & FSMFlavor & {
+  pending: PendingUpdate;
+  employee: boolean;
+  answer: string | null;
+};
 
 export class TelegramWorker {
   private readonly processing = new Set<string>();
   private readonly replies = new Map<string, Promise<void>>();
   private readonly output: TelegramOutput;
+  private readonly handlers = new Composer<UpdateContext>();
   private scanning = false;
   private recovered = false;
-  private botUsername: string | undefined;
+  private botInfo: Context['me'] | undefined;
 
   constructor(
     private readonly store: TelegramStore,
@@ -24,6 +35,55 @@ export class TelegramWorker {
     private readonly instanceId: (chatId: number) => string,
   ) {
     this.output = new TelegramOutput(telegram, store);
+    this.handlers.use(stateMiddleware());
+    this.handlers.command('start', async (ctx) => {
+      const [argument] = ctx.match.split(/\s+/, 1);
+      if (argument) {
+        const inviteId = argument.replace(/^invite_/, '');
+        if (!inviteIdPattern.test(inviteId)) {
+          await ctx.fsm.clear();
+          await this.answer(ctx, accessDenied);
+          return;
+        }
+        await ctx.fsm.set(State.AwaitName, { inviteId });
+        await this.answer(ctx, promptName);
+        return;
+      }
+      await ctx.fsm.clear();
+      await this.answer(ctx, ctx.employee ? 'Можешь задавать вопросы.' : accessDenied);
+    });
+    this.handlers.command('reset', async (ctx) => {
+      if (!ctx.employee) {
+        await ctx.fsm.clear();
+        await this.answer(ctx, accessDenied);
+        return;
+      }
+      ctx.answer = await this.store.reset(ctx.pending, this.instanceId(ctx.chatId));
+    });
+    this.handlers.on('message:entities:bot_command', (ctx) => { ctx.answer = ''; });
+    this.handlers.on('message:text', onState(State.AwaitName, async (ctx) => {
+      const inviteId = ctx.fsm.state?.data?.inviteId;
+      if (typeof inviteId !== 'string') {
+        await ctx.fsm.clear();
+        await this.answer(ctx, accessDenied);
+        return;
+      }
+      const name = ctx.message.text;
+      if ([...name].length > 255) {
+        await this.answer(ctx, 'Имя должно быть не длиннее 255 символов. Введите имя ещё раз:');
+        return;
+      }
+      const retrying = ctx.fsm.state?.data?.activation === ctx.pending.sequence;
+      if (!retrying && !ctx.employee) {
+        await ctx.fsm.patch({ activation: ctx.pending.sequence });
+        await this.store.saveSession(ctx.pending.chat_id, ctx.session);
+      }
+      const accepted = (retrying && ctx.employee)
+        || await acceptInvite(inviteId, ctx.pending.payload, name)
+        || (retrying && await isEmployee(ctx.pending.payload.userId));
+      await ctx.fsm.clear();
+      await this.answer(ctx, accepted ? accessGranted : accessDenied);
+    }));
   }
 
   async scan(): Promise<void> {
@@ -54,15 +114,10 @@ export class TelegramWorker {
   }
 
   private async admit(update: PendingUpdate): Promise<void> {
-    if (update.payload.text.startsWith('/')) {
-      if (update.payload.commandFor) {
-        this.botUsername ??= (await this.telegram.getMe()).username.toLowerCase();
-        if (update.payload.commandFor !== this.botUsername) {
-          this.run(update, async () => {});
-          return;
-        }
-      }
-      const answer = update.command_answer ?? await this.command(update);
+    const employee = await isEmployee(update.payload.userId);
+    const answer = update.command_answer ?? (update.instance_id === null
+      ? await this.handle(update, employee) : null);
+    if (answer !== null || !employee) {
       this.run(update, async () => {
         if (answer) {
           await this.output.send(`command:${update.update_id}`, update.chat_id, answer, false);
@@ -131,30 +186,29 @@ export class TelegramWorker {
       error instanceof Error ? error.name : 'Error');
   }
 
-  private async command(update: PendingUpdate): Promise<string> {
-    const { text, firstName, lastName } = update.payload;
-    const [token, argument] = text.split(/\s+/);
-    let answer: string;
-    switch (token.split('@')[0].toLowerCase()) {
-      case '/reset':
-        return await this.store.reset(update, this.instanceId(Number(update.chat_id)));
-      case '/start': {
-        if (argument?.startsWith('invite_')) {
-          const id = argument.slice('invite_'.length);
-          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-            answer = 'Некорректная ссылка приглашения.';
-          } else {
-            answer = await acceptInvite(id, update.payload);
-          }
-          break;
-        }
-        const name = [firstName, lastName].filter(Boolean).join(' ');
-        answer = `Привет, ${name}!\nНапиши свой вопрос. Чтобы начать новый диалог, отправь /reset.`;
-        break;
-      }
-      default:
-        answer = '';
-    }
-    return await this.store.commandAnswer(update.sequence, answer);
+  private async answer(ctx: UpdateContext, text: string): Promise<void> {
+    ctx.answer = await this.store.commandAnswer(ctx.pending, text, ctx.session);
+  }
+
+  private async handle(update: PendingUpdate, employee: boolean): Promise<string | null> {
+    const { text, userId, firstName, lastName, username } = update.payload;
+    const session = await this.store.session(update.chat_id);
+    const [token] = text.startsWith('/') ? text.split(/\s+/, 1) : [];
+    if (!token && session._state === null) return null;
+    this.botInfo ??= await this.telegram.getMe();
+    const ctx = new Context({
+      update_id: Number(update.update_id),
+      message: {
+        message_id: 0,
+        date: 0,
+        chat: { type: 'private', id: Number(update.chat_id), first_name: firstName },
+        from: { id: userId, is_bot: false, first_name: firstName, last_name: lastName, username },
+        text: token ? token.toLowerCase() + text.slice(token.length) : text,
+        entities: token ? [{ type: 'bot_command', offset: 0, length: token.length }] : undefined,
+      },
+    }, this.telegram, this.botInfo);
+    const routed = Object.assign(ctx, { pending: update, employee, session, answer: null }) as UpdateContext;
+    await this.handlers.middleware()(routed, async () => {});
+    return routed.answer;
   }
 }
