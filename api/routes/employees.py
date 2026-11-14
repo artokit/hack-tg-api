@@ -1,10 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from depends import get_current_user, get_employee_service
+from depends import get_current_user, get_employee_service, require_bot_token
 from schemas.employees import EmployeeCreate, EmployeePage, EmployeeRead
 from services.employees import EmployeeService
 
 router = APIRouter(tags=["employees"], dependencies=[Depends(get_current_user)])
+private_router = APIRouter(
+    prefix="/private", tags=["employees"], dependencies=[Depends(require_bot_token)]
+)
 
 
 @router.get("/employees", response_model=EmployeePage)
@@ -32,6 +35,9 @@ async def create_employee(
 
 
 @router.get(
+    "/employees/by-telegram-id/{telegram_id}", response_model=EmployeeRead
+)
+@private_router.get(
     "/employees/by-telegram-id/{telegram_id}", response_model=EmployeeRead
 )
 async def get_employee_by_telegram_id(

@@ -76,6 +76,13 @@ export default {
         status text NOT NULL CHECK (status IN ('sending', 'sent', 'failed', 'unknown')),
         PRIMARY KEY (bot_id, delivery_id)
       );
+
+      CREATE TABLE IF NOT EXISTS bars_telegram_sessions (
+        bot_id text NOT NULL,
+        chat_id bigint NOT NULL,
+        state jsonb,
+        PRIMARY KEY (bot_id, chat_id)
+      );
     `);
   },
 };

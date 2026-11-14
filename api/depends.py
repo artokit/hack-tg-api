@@ -94,7 +94,6 @@ def require_bot_token(
 
 def get_invite_service(
     session: AsyncSession = Depends(get_async_session),
-    employee_service: EmployeeService = Depends(get_employee_service),
     settings: InviteSettings = Depends(get_invite_settings),
 ) -> InviteService:
-    return InviteService(InviteRepository(session), employee_service, settings)
+    return InviteService(InviteRepository(session), settings)

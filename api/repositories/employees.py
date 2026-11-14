@@ -33,13 +33,7 @@ class EmployeeRepository:
         last_name: str | None,
         username: str | None = None,
     ) -> Employee:
-        employee = Employee(
-            telegram_id=telegram_id,
-            first_name=first_name,
-            last_name=last_name,
-            username=username,
-        )
-        self._session.add(employee)
+        employee = self.add(telegram_id, first_name, last_name, username)
         try:
             await self._session.commit()
         except IntegrityError as error:
@@ -48,4 +42,20 @@ class EmployeeRepository:
                 raise ValueError("Employee already exists") from error
             raise
         await self._session.refresh(employee)
+        return employee
+
+    def add(
+        self,
+        telegram_id: int,
+        first_name: str | None,
+        last_name: str | None,
+        username: str | None,
+    ) -> Employee:
+        employee = Employee(
+            telegram_id=telegram_id,
+            first_name=first_name,
+            last_name=last_name,
+            username=username,
+        )
+        self._session.add(employee)
         return employee
