@@ -160,13 +160,6 @@ Flue берёт адрес и ключ для чата и Vision из `CHAT_BASE
 - `POST /internal/rag/search` принимает `question`, `original_question` и необязательный
   `exact_id`. Возвращает фрагменты для тулзы и требует `X-Bot-Token: <BOT_API_TOKEN>`.
 
-Ссылки на оригиналы из Telegram используют `RAG_FILES_PUBLIC_URL`, по умолчанию
-`https://api.cheremha.ru`. В HTTPS-блоке этого домена замените существующие маршруты
-`/file-service` конфигом `deploy/nginx/file-service.conf`. Он направляет подписанные
-ссылки с UUID в FastAPI, а остальные файловые маршруты в file-service. Если меняли
-`API_PORT` или `FILE_SERVICE_PORT`, подставьте соответствующие порты в `proxy_pass`.
-Проверьте и перечитайте конфигурацию командой `sudo nginx -t && sudo systemctl reload nginx`.
-
 ## Проверки разработки
 
 После `npm ci` в `flue/` выполните `npm run typecheck` и `npm run build`.
