@@ -39,6 +39,18 @@ Bucket по умолчанию приватный. Текущий file-service �
 
 Готовые официальные образы MinIO недоступны в проверенных реестрах. Используется community-сборка `netvark/minio` с открытым процессом сборки, закреплённая по digest `sha256:77281ea99af0d02e2880e91d345bf81cae584454aedffbb7912331774f42d4bf`. Community-версия MinIO больше не поддерживается: этот контур предназначен для локальной разработки, а для публичного production-хранилища нужен поддерживаемый S3-сервис.
 
+Для публикации файлового сервиса скопируйте `deploy/nginx/file-service.conf` в
+`/etc/nginx/snippets/bars-file-service.conf` и добавьте в HTTPS-блок `api.cheremha.ru`:
+
+```nginx
+include /etc/nginx/snippets/bars-file-service.conf;
+```
+
+Если изменили `FILE_SERVICE_PORT`, укажите тот же порт в `proxy_pass`. Выполните
+`sudo nginx -t && sudo systemctl reload nginx`. Swagger открывается по адресу
+https://api.cheremha.ru/file-service. Эта версия файлового сервиса принимает
+загрузки и выдаёт метаданные по ID без авторизации.
+
 ## Документация API
 
 Swagger UI доступен на `http://127.0.0.1:8000/docs`, схема OpenAPI — на `http://127.0.0.1:8000/openapi.json`. В Swagger можно посмотреть и вызвать ручки входа, сотрудников, приглашений и проверки состояния API. Порт API в Docker Compose можно изменить через `API_PORT` в `.env`; доступ с хоста открыт только на `127.0.0.1`.
