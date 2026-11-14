@@ -61,8 +61,22 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+      if (path.startsWith('/users/by-telegram-id/') && req.method === 'GET') {
+        const telegramUserId = Number(path.split('/').at(-1));
+        if (!users.has(telegramUserId)) {
+          res.writeHead(404).end();
+          return;
+        }
+        res.end(JSON.stringify({ id: 1, telegram_user_id: telegramUserId, username: 'tester' }));
+        return;
+      }
       if (path === '/users' && req.method === 'POST') {
+        if (users.has(body.telegram_user_id)) {
+          res.writeHead(409).end();
+          return;
+        }
         users.add(body.telegram_user_id);
+        res.writeHead(201);
         res.end(JSON.stringify({ id: 1, ...body }));
         return;
       }

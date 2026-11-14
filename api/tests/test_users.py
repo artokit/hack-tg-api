@@ -20,10 +20,11 @@ def test_users_in_postgres(monkeypatch: pytest.MonkeyPatch) -> None:
             first = pool.submit(client.post, "/users", json=payload)
             second = pool.submit(client.post, "/users", json=payload)
             created, repeated = first.result(), second.result()
-        assert created.status_code == repeated.status_code == 200
-        user = created.json()
-        assert repeated.json() == user
+        assert sorted([created.status_code, repeated.status_code]) == [201, 409]
+        user = (created if created.status_code == 201 else repeated).json()
         assert user["telegram_user_id"] == payload["telegram_user_id"]
+        assert client.get(f"/users/by-telegram-id/{payload['telegram_user_id']}").json() == user
+        assert client.get("/users/by-telegram-id/-1").status_code == 404
         assert client.get(f"/users/{user['id']}").json() == user
         assert client.get("/users/9999999999").status_code == 404
         assert (

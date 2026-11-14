@@ -1,28 +1,31 @@
 from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.users import User
+from db.models import User
 
 
 class UserRepository:
-    def __init__(self, session: AsyncSession) -> None:
-        self.session = session
+    def __init__(self, session: AsyncSession):
+        self._session = session
 
-    async def register(self, telegram_user_id: int, username: str | None) -> User:
-        statement = (
-            insert(User)
-            .values(telegram_user_id=telegram_user_id, username=username)
-            .on_conflict_do_nothing(index_elements=[User.telegram_user_id])
-            .returning(User)
-        )
-        created = await self.session.scalar(statement)
-        if created is not None:
-            return created
-        existing = await self.session.execute(
+    async def get_by_telegram_id(self, telegram_user_id: int) -> User | None:
+        return await self._session.scalar(
             select(User).where(User.telegram_user_id == telegram_user_id)
         )
-        return existing.scalar_one()
 
     async def get(self, user_id: int) -> User | None:
-        return await self.session.get(User, user_id)
+        return await self._session.get(User, user_id)
+
+    async def create(self, telegram_user_id: int, username: str | None) -> User:
+        user = User(telegram_user_id=telegram_user_id, username=username)
+        self._session.add(user)
+        try:
+            await self._session.commit()
+        except IntegrityError as error:
+            await self._session.rollback()
+            if await self.get_by_telegram_id(telegram_user_id) is not None:
+                raise ValueError("User already exists") from error
+            raise
+        await self._session.refresh(user)
+        return user
