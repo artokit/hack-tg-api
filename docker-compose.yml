@@ -65,20 +65,29 @@ services:
       timeout: 5s
       retries: 12
 
-  file-postgres:
+  file-db-init:
     image: postgres:16-alpine
-    restart: unless-stopped
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
-      POSTGRES_USER: ${FILE_DB_USER:-file_service}
-      POSTGRES_PASSWORD: ${FILE_DB_PASSWORD:?Set FILE_DB_PASSWORD in .env}
-      POSTGRES_DB: ${FILE_DB_NAME:-files}
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGDATABASE: app
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      FILE_DB_USER: ${FILE_DB_USER:-file_service}
+      FILE_DB_PASSWORD: ${FILE_DB_PASSWORD:?Set FILE_DB_PASSWORD in .env}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        exec psql -v ON_ERROR_STOP=1 \
+          -v file_db_user="$$FILE_DB_USER" \
+          -v file_db_password="$$FILE_DB_PASSWORD" \
+          -f /bootstrap/create_database.sql
     volumes:
-      - file_postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+      - ./file-service/db/create_database.sql:/bootstrap/create_database.sql:ro
 
   minio:
     image: netvark/minio@sha256:77281ea99af0d02e2880e91d345bf81cae584454aedffbb7912331774f42d4bf
@@ -110,15 +119,17 @@ services:
     build: ./file-service
     restart: unless-stopped
     depends_on:
-      file-postgres:
+      postgres:
         condition: service_healthy
+      file-db-init:
+        condition: service_completed_successfully
       minio:
         condition: service_healthy
     environment:
       DB_USER: ${FILE_DB_USER:-file_service}
       DB_PASS: ${FILE_DB_PASSWORD:?Set FILE_DB_PASSWORD in .env}
-      DB_NAME: ${FILE_DB_NAME:-files}
-      DB_HOST: file-postgres
+      DB_NAME: file-service
+      DB_HOST: postgres
       DB_PORT: "5432"
       S3_STORAGE_URL: http://minio:9000
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-file_storage_admin}
@@ -165,5 +176,4 @@ services:
 volumes:
   postgres_flue_data:
   qdrant_data:
-  file_postgres_data:
   minio_data:
