@@ -1,5 +1,5 @@
 import { AgentRunError, init } from '@flue/runtime';
-import { type FSMFlavor, type StateSession, onState, stateMiddleware } from '@kalutskii/grammy-fsm';
+import { type FSMFlavor, type StateSession, stateMiddleware } from '@kalutskii/grammy-fsm';
 import { type Api, type SessionFlavor, Composer, Context } from 'grammy';
 
 import { Bars } from './agents/bars.js';
@@ -10,8 +10,6 @@ import { TelegramOutput } from './telegram-output.js';
 import { type PendingUpdate, TelegramStore } from './telegram-store.js';
 
 const unavailable = 'Сейчас не получается ответить. Попробуй ещё раз чуть позже.';
-const promptName = 'Введите имя:';
-const State = { AwaitName: 'await_name' } as const;
 const inviteIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type UpdateContext = Context & SessionFlavor<StateSession> & FSMFlavor & {
@@ -38,18 +36,19 @@ export class TelegramWorker {
     this.handlers.use(stateMiddleware());
     this.handlers.command('start', async (ctx) => {
       const [argument] = ctx.match.split(/\s+/, 1);
+      await ctx.fsm.clear();
       if (argument) {
         const inviteId = argument.replace(/^invite_/, '');
         if (!inviteIdPattern.test(inviteId)) {
-          await ctx.fsm.clear();
           await this.answer(ctx, accessDenied);
           return;
         }
-        await ctx.fsm.set(State.AwaitName, { inviteId });
-        await this.answer(ctx, promptName);
+        const accepted = ctx.employee
+          || await acceptInvite(inviteId, ctx.pending.payload)
+          || await isEmployee(ctx.pending.payload.userId);
+        await this.answer(ctx, accepted ? accessGranted : accessDenied);
         return;
       }
-      await ctx.fsm.clear();
       await this.answer(ctx, ctx.employee ? 'Можешь задавать вопросы.' : accessDenied);
     });
     this.handlers.command('reset', async (ctx) => {
@@ -61,29 +60,6 @@ export class TelegramWorker {
       ctx.answer = await this.store.reset(ctx.pending, this.instanceId(ctx.chatId));
     });
     this.handlers.on('message:entities:bot_command', (ctx) => { ctx.answer = ''; });
-    this.handlers.on('message:text', onState(State.AwaitName, async (ctx) => {
-      const inviteId = ctx.fsm.state?.data?.inviteId;
-      if (typeof inviteId !== 'string') {
-        await ctx.fsm.clear();
-        await this.answer(ctx, accessDenied);
-        return;
-      }
-      const name = ctx.message.text;
-      if ([...name].length > 255) {
-        await this.answer(ctx, 'Имя должно быть не длиннее 255 символов. Введите имя ещё раз:');
-        return;
-      }
-      const retrying = ctx.fsm.state?.data?.activation === ctx.pending.sequence;
-      if (!retrying && !ctx.employee) {
-        await ctx.fsm.patch({ activation: ctx.pending.sequence });
-        await this.store.saveSession(ctx.pending.chat_id, ctx.session);
-      }
-      const accepted = (retrying && ctx.employee)
-        || await acceptInvite(inviteId, ctx.pending.payload, name)
-        || (retrying && await isEmployee(ctx.pending.payload.userId));
-      await ctx.fsm.clear();
-      await this.answer(ctx, accepted ? accessGranted : accessDenied);
-    }));
   }
 
   async scan(): Promise<void> {
@@ -117,10 +93,11 @@ export class TelegramWorker {
     const employee = await isEmployee(update.payload.userId);
     const answer = update.command_answer ?? (update.instance_id === null
       ? await this.handle(update, employee) : null);
-    if (answer !== null || !employee) {
+    const response = answer ?? (!employee ? accessDenied : null);
+    if (response !== null) {
       this.run(update, async () => {
-        if (answer) {
-          await this.output.send(`command:${update.update_id}`, update.chat_id, answer, false);
+        if (response) {
+          await this.output.send(`command:${update.update_id}`, update.chat_id, response, false);
         }
       });
       return;

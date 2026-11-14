@@ -10,5 +10,6 @@ pydantic-settings==2.16.2
 python-docx==1.2.0
 python-multipart==0.0.33
 PyJWT==2.15.1
+redis==8.1.0
 sqlalchemy[asyncio]==2.1.8
 uvicorn==0.54.0

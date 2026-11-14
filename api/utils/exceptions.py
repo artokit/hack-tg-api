@@ -1,0 +1,2 @@
+class EmployeeCacheUnavailableError(RuntimeError):
+    pass

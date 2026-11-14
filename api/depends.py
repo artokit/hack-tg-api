@@ -3,9 +3,11 @@ from secrets import compare_digest
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import AuthSettings, InviteSettings
+from repositories.employee_cache import EmployeeCacheRepository
 from repositories.employees import EmployeeRepository
 from repositories.health import HealthRepository
 from repositories.invites import InviteRepository
@@ -62,10 +64,15 @@ def get_health_service(session: AsyncSession = Depends(get_async_session)) -> He
     return HealthService(HealthRepository(session))
 
 
+def get_redis(request: Request) -> Redis:
+    return request.app.state.redis
+
+
 def get_employee_service(
     session: AsyncSession = Depends(get_async_session),
+    redis: Redis = Depends(get_redis),
 ) -> EmployeeService:
-    return EmployeeService(EmployeeRepository(session))
+    return EmployeeService(EmployeeRepository(session), EmployeeCacheRepository(redis))
 
 
 def get_ticket_service(

@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +10,9 @@ from db.models import Employee
 class EmployeeRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
+
+    async def get_by_id(self, employee_id: UUID) -> Employee | None:
+        return await self._session.get(Employee, employee_id)
 
     async def get_by_telegram_id(self, telegram_id: int) -> Employee | None:
         return await self._session.scalar(
@@ -25,6 +30,14 @@ class EmployeeRepository:
 
     async def count(self) -> int:
         return await self._session.scalar(select(func.count()).select_from(Employee))
+
+    async def delete(self, employee: Employee) -> None:
+        await self._session.delete(employee)
+        try:
+            await self._session.commit()
+        except Exception:
+            await self._session.rollback()
+            raise
 
     async def create(
         self,

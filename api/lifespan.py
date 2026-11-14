@@ -4,9 +4,10 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 
 import httpx
 from fastapi import FastAPI
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from config import AuthSettings, DatabaseSettings, EmbeddingSettings, InviteSettings
+from config import AuthSettings, DatabaseSettings, EmbeddingSettings, InviteSettings, RedisSettings
 from db.db import create_engine
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
@@ -22,11 +23,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.auth_settings = AuthSettings()
     app.state.invite_settings = InviteSettings()
     embeddings = EmbeddingSettings()
+    redis_settings = RedisSettings()
     async with AsyncExitStack() as stack:
         engine = create_engine(settings.database_url.get_secret_value())
         stack.push_async_callback(engine.dispose)
         app.state.engine = engine
         app.state.sessions = async_sessionmaker(engine, expire_on_commit=False)
+        redis = Redis.from_url(
+            redis_settings.redis_url.get_secret_value(),
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+        stack.push_async_callback(redis.aclose)
+        app.state.redis = redis
         app.state.rag_service = None
         if embeddings.embedding_base_url:
             base_url = str(embeddings.embedding_base_url)
