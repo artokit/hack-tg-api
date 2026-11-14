@@ -7,8 +7,8 @@ from pydantic import AnyHttpUrl
 
 from depends import get_rag_service
 from models.rag import RagUnavailable
-from schemas.rag import RagAnswerRead, RagAnswerRequest, RagJobCreated, RagJobRead
-from services.rag import RagService
+from schemas.rag import RagJobCreated, RagJobRead, RagSearchRequest
+from services.rag import RagService, UnexpectedDocumentId
 
 
 router = APIRouter(prefix="/internal/rag", tags=["rag"])
@@ -52,9 +52,11 @@ async def read_job(job_id: UUID, service: Service):
     return job
 
 
-@router.post("/answer", response_model=RagAnswerRead)
-async def answer(question: RagAnswerRequest, service: Service):
+@router.post("/search")
+async def search(query: RagSearchRequest, service: Service):
     try:
-        return await service.answer(question.question, question.standalone_question)
+        return await service.search(query.question, query.exact_id, query.original_question)
+    except UnexpectedDocumentId as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except RagUnavailable as error:
         raise HTTPException(status_code=503, detail="Document search temporarily unavailable") from error

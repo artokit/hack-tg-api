@@ -26,9 +26,9 @@ def validate_plan(groups, window: list[Block], start: int, document_size: int) -
     expected = start
     chunks = []
     for group in groups:
-        if group.first != expected or not group.first <= group.last < start + len(window):
+        if group["first"] != expected or not group["first"] <= group["last"] < start + len(window):
             raise ValueError("Диапазоны должны покрывать всё окно по порядку без пропусков.")
-        blocks = window[group.first - start:group.last - start + 1]
+        blocks = window[group["first"] - start:group["last"] - start + 1]
         if len(blocks) > MAX_GROUP_BLOCKS or sum(len(block.text) for block in blocks) > MAX_GROUP_CHARS:
             raise ValueError("Не больше 10 блоков и 6000 символов на диапазон.")
         if len(blocks) > 1 and any(block.identifiers or block.kind in ("visual", "scan") for block in blocks):
@@ -36,13 +36,13 @@ def validate_plan(groups, window: list[Block], start: int, document_size: int) -
         tables = {block.table_id for block in blocks if block.table_id}
         if len(tables) > 1:
             raise ValueError("Одна группа не может смешивать разные таблицы.")
-        members = tuple(range(group.first, group.last + 1))
-        if any(not 1 <= index <= document_size for index in group.related):
+        members = tuple(range(group["first"], group["last"] + 1))
+        if any(not 1 <= index <= document_size for index in group["related"]):
             raise ValueError("Связанные ID должны существовать в документе.")
         chunks.append(Chunk(members, tuple(dict.fromkeys(
-            index for index in group.related if index not in members
+            index for index in group["related"] if index not in members
         ))))
-        expected = group.last + 1
+        expected = group["last"] + 1
     if expected != start + len(window):
         raise ValueError("Последний диапазон должен достигать конца окна.")
     return chunks
@@ -107,13 +107,13 @@ class RagIngest:
             location = {"page": block.page, "box": block.box, "section": block.section, "label": block.label}
             parsed = [
                 replace(part, kind=block.kind)
-                for part in text_blocks(visual.text, **location)
+                for part in text_blocks(visual["text"], **location)
             ]
-            if visual.rows:
-                if not visual.columns or any(len(row.cells) != len(visual.columns) for row in visual.rows):
+            if visual["rows"]:
+                if not visual["columns"] or any(len(row["cells"]) != len(visual["columns"]) for row in visual["rows"]):
                     raise InvalidDocument("unreadable_visual")
                 parsed.extend(table_blocks(
-                    [visual.columns, *(row.cells for row in visual.rows)],
+                    [visual["columns"], *(row["cells"] for row in visual["rows"])],
                     block.table_id or f"vision:{index}",
                     **location,
                 ))
@@ -180,7 +180,7 @@ class RagIngest:
             for _ in range(2):
                 plan = await self.model.plan_chunks(inputs, correction)
                 try:
-                    chunks = validate_plan(plan.groups, window, start + 1, len(blocks))
+                    chunks = validate_plan(plan["groups"], window, start + 1, len(blocks))
                 except ValueError as error:
                     correction = str(error)
                 else:

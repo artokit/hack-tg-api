@@ -4,15 +4,33 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import * as v from 'valibot';
 
-import { answerOperations, DocumentAnswer, DocumentImport, importOperations } from './agents/documents.js';
+import { DocumentImport, importOperations } from './agents/documents.js';
 
-const operations = [...importOperations, ...answerOperations] as const;
 const request = v.object({
-  operation: v.picklist(operations),
+  operation: v.picklist(importOperations),
   data: v.record(v.string(), v.unknown()),
-  schema: v.record(v.string(), v.unknown()),
   image: v.optional(v.pipe(v.string(), v.maxLength(14 * 1024 * 1024), v.base64())),
 });
+const string = v.string();
+const integer = v.pipe(
+  v.union([v.number(), v.pipe(v.string(), v.regex(/^\d+$/), v.transform(Number))]),
+  v.safeInteger(),
+);
+const outputs = {
+  read_visual: v.object({
+    text: v.pipe(string, v.maxLength(18000)),
+    columns: v.optional(v.pipe(v.array(string), v.maxLength(40)), []),
+    rows: v.optional(v.pipe(v.array(v.object({
+      cells: v.pipe(v.array(string), v.maxLength(40)),
+    })), v.maxLength(150)), []),
+  }),
+  plan_chunks: v.object({
+    groups: v.pipe(v.array(v.object({
+      first: integer, last: integer,
+      related: v.optional(v.pipe(v.array(integer), v.maxLength(8)), []),
+    })), v.minLength(1), v.maxLength(36)),
+  }),
+};
 
 export const ragModel = new Hono();
 
@@ -35,16 +53,16 @@ ragModel.post('/model', async (c, next) => {
   }
   const parsed = v.safeParse(request, input);
   if (!parsed.success) return c.json({ detail: 'Invalid model request' }, 400);
-  const { operation, data, schema, image } = parsed.output;
+  const { operation, data, image } = parsed.output;
   if ((operation === 'read_visual') !== Boolean(image)) {
     return c.json({ detail: 'Image required only for visual reading' }, 400);
   }
   let text: string;
-  const agent = init(operation === 'read_visual' || operation === 'plan_chunks' ? DocumentImport : DocumentAnswer);
+  const agent = init(DocumentImport);
   const signal = AbortSignal.any([c.req.raw.signal, AbortSignal.timeout(20_000)]);
   try {
     const receipt = await agent.dispatch({
-      initialData: { operation, schema },
+      initialData: { operation },
       message: {
         kind: 'user',
         body: JSON.stringify(data),
@@ -59,7 +77,7 @@ ragModel.post('/model', async (c, next) => {
   }
   try {
     const output: unknown = JSON.parse(text.replace(/^\`\`\`(?:json)?\s*([\s\S]+?)\s*\`\`\`$/i, '$1'));
-    return c.json(output);
+    return c.json(v.parse(outputs[operation], output));
   } catch {
     return c.json({ detail: 'Invalid model output' }, 422);
   }
