@@ -1,6 +1,6 @@
 import httpx
 
-from tickets.base import TicketCreated, TicketRequest, TicketSystem
+from tickets.base import TicketRequest, TicketSystem
 
 
 class TicketSystemError(Exception):
@@ -41,7 +41,7 @@ class JsmAdapter(TicketSystem):
         self._sd = service_desk_id
         self._rt = request_type_id
 
-    async def create(self, req: TicketRequest) -> TicketCreated:
+    async def create(self, req: TicketRequest) -> None:
         payload = {
             # JSM API требует строки, не числа
             "serviceDeskId": self._sd,
@@ -59,5 +59,3 @@ class JsmAdapter(TicketSystem):
             # 400: не хватает обязательных полей типа заявки; 403: юзер не customer этого Service Desk
             raise TicketSystemError(f"JSM rejected request: {resp.json()}")
         _ensure_success(resp)
-        key = resp.json()["issueKey"]        # "HELP-13"
-        return TicketCreated(external_id=key, display_key=key)

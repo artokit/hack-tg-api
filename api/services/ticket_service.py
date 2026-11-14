@@ -17,13 +17,12 @@ class TicketService:
         route = TICKET_ROUTES.get(data.category) or TICKET_ROUTES["default"]
         adapter = build_adapter(route)
 
-        # Сначала заявка в тикет-системе (локальная запись появится только
-        # после того, как получили внешний ключ — иначе он был бы null)
+        # Сохраняем локальную запись после успешного создания в тикет-системе.
         req = TicketRequest(
             title=data.title,
             description=data.description,
         )
-        created = await adapter.create(req)
+        await adapter.create(req)
 
         ticket = Ticket(
             title=data.title,
@@ -31,8 +30,6 @@ class TicketService:
             category=data.category if data.category in TICKET_ROUTES else "default",
             author_name=data.author_name,
             system=route["system"],
-            external_id=created.external_id,
-            display_key=created.display_key,
             status="created",
         )
         session.add(ticket)

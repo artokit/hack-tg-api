@@ -20,6 +20,4 @@ class TicketRead(BaseModel):
     description: str
     category: str
     system: str
-    external_id: str | None = None
-    display_key: str | None = None
     status: str
