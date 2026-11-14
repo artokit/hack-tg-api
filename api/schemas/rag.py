@@ -24,11 +24,18 @@ class RagUrlRequest(BaseModel):
     source_id: str | None = Field(default=None, min_length=1, max_length=100, pattern=SOURCE_ID_PATTERN)
 
 
+class RagConfluenceImportCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    space_id: str = Field(pattern=r"^[1-9][0-9]{0,18}$")
+    page_id: str = Field(pattern=r"^[1-9][0-9]{0,18}$")
+
+
 class RagJobRead(BaseModel):
     id: UUID
     source_id: str
     file_id: UUID | None = None
-    status: Literal["queued", "running", "succeeded", "failed"]
+    status: Literal["queued", "running", "succeeded", "failed", "skipped"]
     error_code: str | None
     version: str | None
     chunk_count: int | None

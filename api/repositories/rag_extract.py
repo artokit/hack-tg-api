@@ -10,7 +10,8 @@ from docx import Document
 from docx.oxml.ns import qn
 from docx.table import Table
 from docx.text.paragraph import Paragraph
-from lxml.etree import XMLSyntaxError
+from lxml import html
+from lxml.etree import ParserError, XMLSyntaxError
 from markdown_it import MarkdownIt
 from pdfminer.pdfexceptions import PDFException
 from pdfminer.psparser import PSEOF
@@ -23,6 +24,8 @@ POINT_ID_PATTERN = r"(?<![\w.-])[A-Z]{1,10}-\d+(?:\.\d+)*-\d{2,6}(?![\w-]|\.\d)"
 POINT_ID = re.compile(POINT_ID_PATTERN, re.IGNORECASE | re.ASCII)
 FOOTER_ERROR = re.compile(r"^Ошибка! Используйте вкладку.*", re.IGNORECASE)
 INLINE_IMAGE_DATA = re.compile(r"data:image/[^\s;,()]+;base64,[A-Za-z0-9+/=]+")
+HTML_HEADINGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+HTML_CONTAINERS = ("article", "blockquote", "div", "li", "main", "ol", "p", "pre", "section", "ul")
 MAX_PAGES = 300
 MAX_BLOCKS = 15000
 MAX_BLOCK_CHARS = 2400
@@ -44,8 +47,8 @@ def row_identifiers(cells: tuple[str, ...]) -> tuple[str, ...]:
 
 def extract_blocks(data: bytes, format: str) -> list[Block]:
     try:
-        blocks = {"pdf": extract_pdf, "docx": extract_docx, "md": extract_markdown}[format](data)
-    except (BadZipFile, PDFException, PSEOF, XMLSyntaxError, UnicodeError, KeyError) as error:
+        blocks = {"pdf": extract_pdf, "docx": extract_docx, "md": extract_markdown, "html": extract_html}[format](data)
+    except (BadZipFile, PDFException, PSEOF, ParserError, XMLSyntaxError, UnicodeError, KeyError) as error:
         raise InvalidDocument("invalid_file") from error
     if not blocks:
         raise InvalidDocument("empty_document")
@@ -67,10 +70,11 @@ def clean_cell(value: str | None) -> str:
     return " ".join((value or "").split())
 
 
-def table_blocks(rows, table_id: str, **location) -> list[Block]:
+def table_blocks(rows, table_id: str, *, has_header: bool = True, **location) -> list[Block]:
     if not rows:
         return []
-    columns = tuple(clean_cell(value) for value in rows[0])
+    columns = tuple(clean_cell(value) for value in rows[0]) if has_header else ()
+    body = (rows[1:] or rows) if has_header else rows
     return [
         Block(
             "table_row",
@@ -81,9 +85,70 @@ def table_blocks(rows, table_id: str, **location) -> list[Block]:
             identifiers=row_identifiers(cells),
             **location,
         )
-        for row in rows[1:] or rows
+        for row in body
         if any(cells := tuple(clean_cell(value) for value in row))
     ]
+
+
+def html_parts(element: html.HtmlElement):
+    inline = [element.text or ""]
+    for child in element:
+        if child.tag in (*HTML_HEADINGS, "table", *HTML_CONTAINERS):
+            yield clean_cell("".join(inline))
+            inline.clear()
+            if child.tag in HTML_CONTAINERS:
+                yield from html_parts(child)
+            else:
+                yield child
+        elif child.tag == "br":
+            inline.append(" ")
+        else:
+            inline.append(child.text_content())
+        inline.append(child.tail or "")
+    yield clean_cell("".join(inline))
+
+
+def html_text(element: html.HtmlElement) -> str:
+    return " ".join(part if isinstance(part, str) else html_text(part) for part in html_parts(element) if part)
+
+
+def extract_html(data: bytes) -> list[Block]:
+    root = html.fragment_fromstring(data.decode("utf-8"), create_parent="div")
+    for element in root.xpath(".//script | .//style | .//iframe | .//object | .//svg | .//*[@hidden] | .//comment()"):
+        if element.getparent() is not None:
+            element.drop_tree()
+    blocks: list[Block] = []
+    headings: list[tuple[int, str]] = []
+    for position, part in enumerate(html_parts(root)):
+        section = tuple(title for _, title in headings)
+        if isinstance(part, str):
+            inherited = next((codes for title in reversed(section) if (codes := leading_identifier(title))), ())
+            blocks.extend(text_blocks(part, section=section, identifiers=inherited))
+        elif part.tag == "table":
+            rows = part.xpath("./tr | ./thead/tr | ./tbody/tr | ./tfoot/tr")
+            if rows:
+                cells = [row.xpath("./th | ./td") for row in rows]
+                has_header = (
+                    rows[0].getparent().tag == "thead"
+                    or all(cell.tag == "th" and cell.get("scope") not in ("row", "rowgroup") for cell in cells[0])
+                ) and bool(cells[0]) and all(
+                    len(row) == len(cells[0])
+                    and all(cell.get("colspan", "1") == cell.get("rowspan", "1") == "1" for cell in row)
+                    for row in cells
+                )
+                blocks.extend(table_blocks(
+                    [[html_text(cell) for cell in row] for row in cells],
+                    f"html:{position}", has_header=has_header, section=section,
+                ))
+        elif title := html_text(part):
+            level = int(part.tag[1])
+            headings = [(depth, heading) for depth, heading in headings if depth < level]
+            headings.append((level, title))
+            blocks.append(Block(
+                "heading", title, section=tuple(heading for _, heading in headings),
+                identifiers=leading_identifier(title),
+            ))
+    return blocks
 
 
 def image_png(blob: bytes) -> bytes:

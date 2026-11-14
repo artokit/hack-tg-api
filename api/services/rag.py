@@ -42,6 +42,8 @@ class RagService:
         self, source_id: str | None, title: str | None, filename: str, data: bytes,
         *, replaces: UUID | None = None,
     ) -> tuple[UUID, str, UUID]:
+        if source_id and source_id.startswith("confluence:"):
+            raise InvalidDocument("reserved_source_id")
         name = PurePath(filename.replace("\\", "/")).name
         format = PurePath(name).suffix.lower().removeprefix(".")
         if format not in DOCUMENT_FORMATS:
@@ -75,9 +77,19 @@ class RagService:
             raise RagDocumentNotFound
 
     async def submit_url(self, source_id: str | None, title: str | None, url: str) -> tuple[UUID, str]:
+        if source_id and source_id.startswith("confluence:"):
+            raise InvalidDocument("reserved_source_id")
         job_id = uuid4()
         source_id = source_id or str(uuid4())
         await self.jobs.enqueue(job_id, self.index.key, source_id, title, url, "url")
+        return job_id, source_id
+
+    async def submit_confluence(self, space_id: str, page_id: str) -> tuple[UUID, str]:
+        job_id = uuid4()
+        source_id = f"confluence:{page_id}"
+        await self.jobs.enqueue(
+            job_id, self.index.key, source_id, None, None, "html", confluence_space_id=space_id,
+        )
         return job_id, source_id
 
     async def read_job(self, job_id: UUID):

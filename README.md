@@ -54,6 +54,35 @@ Swagger UI доступен на `http://127.0.0.1:8000/docs`, схема OpenAP
 
 Без `X-Bot-Token` или с неверным значением возвращается `401`, при отсутствии страницы или пространства — `404`, при ошибках Confluence — `502`, при отсутствии настроек — `503`, при таймауте — `504`.
 
+### Переиндексация по вебхуку
+
+Задайте отдельный случайный `CONFLUENCE_WEBHOOK_SECRET` в корневом `.env`.
+Добавьте точный маршрут в HTTPS-блок Nginx для `api.cheremha.ru`. Используйте
+хостовый порт Flue из `FLUE_PORT`, по умолчанию `3000`.
+
+```nginx
+location = /flue/channels/confluence/webhook {
+    proxy_pass http://127.0.0.1:3000/channels/confluence/webhook;
+}
+```
+
+В Automation нужного пространства выберите [Page edited](https://support.atlassian.com/cloud-automation/docs/triggers-in-confluence-automation/#Page-edited)
+и [Send web request](https://support.atlassian.com/cloud-automation/docs/actions-in-confluence-automation/#Send-web-request).
+Метод `POST`, адрес `https://api.cheremha.ru/flue/channels/confluence/webhook`,
+заголовки `Content-Type: application/json` и скрытый `Authorization: Bearer <CONFLUENCE_WEBHOOK_SECRET>`.
+В поле Custom data укажите JSON.
+
+```json
+{"space_id":"{{space.id}}","page_id":"{{page.id}}"}
+```
+
+Сохраните правку тестовой страницы и проверьте `202` в журнале Automation.
+Этот ответ подтверждает запись задания. Результат импорта виден в `GET /rag/jobs`.
+Повтор той же опубликованной версии получает статус `skipped` в истории
+(`include_history=true`). При ошибке импорта бот использует последнюю успешно
+индексированную версию. Фрагменты импортированных страниц доступны пользователям
+бота и содержат ссылку на страницу Confluence.
+
 ## Авторизация администратора
 
 Задайте случайный `JWT_SECRET` длиной не менее 32 символов в `.env`. Секрет должен оставаться одинаковым между перезапусками и экземплярами API. Срок действия JWT задаётся через `JWT_ACCESS_TOKEN_EXPIRE_MINUTES` и по умолчанию составляет 60 минут.

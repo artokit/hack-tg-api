@@ -19,11 +19,13 @@ from config import (
 )
 from db.db import create_engine
 from models.rag import RagImport
+from repositories.confluence import ConfluenceRepository
 from repositories.rag_files import RagFiles
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
 from repositories.rag_model import RagModel
 from repositories.rag_uploads import RagUploads
+from services.confluence import ConfluenceService
 from services.rag import RagOriginals, RagService
 from services.rag_ingest import RagIngest
 
@@ -41,7 +43,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.auth_settings = AuthSettings()
     app.state.invite_settings = InviteSettings()
     confluence_settings = ConfluenceSettings()
-    app.state.confluence_settings = confluence_settings
     embeddings = EmbeddingSettings()
     redis_settings = RedisSettings()
     async with AsyncExitStack() as stack:
@@ -60,7 +61,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         stack.push_async_callback(redis.aclose)
         app.state.redis = redis
-        app.state.confluence_client = await stack.enter_async_context(
+        confluence_client = await stack.enter_async_context(
             httpx.AsyncClient(
                 base_url=confluence_settings.confluence_base_url.rstrip("/") + "/",
                 auth=(
@@ -71,6 +72,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 timeout=30,
             )
         )
+        confluence = ConfluenceService(ConfluenceRepository(confluence_client), confluence_settings)
+        app.state.confluence_service = confluence
         app.state.rag_service = None
         file_settings = FileSettings()
         http = await stack.enter_async_context(httpx.AsyncClient(timeout=20))
@@ -90,7 +93,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             async def load_import(job: RagImport) -> bytes:
                 return await files.load(job.file_id) if job.file_id else await uploads.load(job)
 
-            importer = RagIngest(jobs, index, model, load_import, uploads.discard, files.delete)
+            importer = RagIngest(jobs, index, model, load_import, uploads.discard, files.delete, confluence)
             worker = asyncio.create_task(importer.worker(), name="rag-import")
             stack.push_async_callback(stop_worker, worker)
         yield

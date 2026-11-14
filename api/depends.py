@@ -6,8 +6,7 @@ from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBea
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import AuthSettings, ConfluenceSettings, InviteSettings
-from repositories.confluence import ConfluenceRepository
+from config import AuthSettings, InviteSettings
 from repositories.employee_cache import EmployeeCacheRepository
 from repositories.employees import EmployeeRepository
 from repositories.health import HealthRepository
@@ -119,14 +118,5 @@ def get_invite_service(
     return InviteService(InviteRepository(session), settings)
 
 
-def get_confluence_settings(request: Request) -> ConfluenceSettings:
-    return request.app.state.confluence_settings
-
-
-def get_confluence_service(
-    request: Request,
-    settings: ConfluenceSettings = Depends(get_confluence_settings),
-) -> ConfluenceService:
-    return ConfluenceService(
-        ConfluenceRepository(request.app.state.confluence_client), settings
-    )
+def get_confluence_service(request: Request) -> ConfluenceService:
+    return request.app.state.confluence_service

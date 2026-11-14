@@ -10,7 +10,8 @@ from depends import get_current_user, get_rag_originals, get_rag_service, requir
 from models.rag import DocumentTooLarge, InvalidDocument, RagDocumentNotFound, RagUnavailable
 from repositories.rag_files import MAX_DOCUMENT_BYTES
 from schemas.rag import (
-    SOURCE_ID_PATTERN, RagEvidenceRead, RagJobCreated, RagJobPage, RagJobRead, RagSearchRequest, RagUrlRequest,
+    SOURCE_ID_PATTERN, RagConfluenceImportCreate, RagEvidenceRead, RagJobCreated, RagJobPage, RagJobRead,
+    RagSearchRequest, RagUrlRequest,
 )
 from services.rag import RagOriginals, RagService, UnexpectedDocumentId
 
@@ -66,6 +67,20 @@ async def import_from_url(source: RagUrlRequest, service: Service):
         raise HTTPException(status_code=422, detail="Invalid source URL")
     try:
         job_id, source_id = await service.submit_url(source.source_id, source.title, str(source.url))
+    except InvalidDocument as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except RagUnavailable as error:
+        raise HTTPException(status_code=503, detail="Document import temporarily unavailable") from error
+    return RagJobCreated(job_id=job_id, source_id=source_id)
+
+
+@router.post(
+    "/internal/rag/confluence/imports", response_model=RagJobCreated, status_code=202,
+    response_model_exclude_none=True, dependencies=[Depends(require_bot_token)],
+)
+async def import_confluence_page(source: RagConfluenceImportCreate, service: Service):
+    try:
+        job_id, source_id = await service.submit_confluence(source.space_id, source.page_id)
     except RagUnavailable as error:
         raise HTTPException(status_code=503, detail="Document import temporarily unavailable") from error
     return RagJobCreated(job_id=job_id, source_id=source_id)

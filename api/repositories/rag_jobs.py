@@ -27,13 +27,14 @@ class RagJobs:
     async def enqueue(
         self, job_id: UUID, index_key: str, source_id: str, title: str | None,
         source_url: str | None, format: str, file_id: UUID | None = None, size_bytes: int | None = None,
+        *, confluence_space_id: str | None = None,
     ) -> None:
         async with self.session(transaction=True) as session:
             await self.lock_source(session, index_key, source_id)
             session.add(RagJob(
                 id=job_id,
                 index_key=index_key, source_id=source_id, title=title or "", source_url=source_url,
-                format=format, file_id=file_id, size_bytes=size_bytes,
+                format=format, file_id=file_id, size_bytes=size_bytes, confluence_space_id=confluence_space_id,
             ))
 
     @staticmethod
@@ -47,6 +48,7 @@ class RagJobs:
         async with self.session() as session:
             return await session.scalar(select(RagJob.source_id).where(
                 RagJob.id == job_id, RagJob.index_key == index_key, RagJob.status != "deleting",
+                RagJob.confluence_space_id.is_(None),
             ))
 
     @staticmethod
@@ -106,7 +108,10 @@ class RagJobs:
             for job in jobs:
                 if job.status == "deleting":
                     continue
-                self.record_cleanup(job, job.version, job.file_id, legacy=not job.file_id and not job.source_url)
+                self.record_cleanup(
+                    job, job.version, job.file_id,
+                    legacy=not job.file_id and not job.source_url and job.confluence_space_id is None,
+                )
                 if job.cleanup:
                     job.status = "deleting"
                     job.cleanup = [{**artifact, "retry_at": None} for artifact in job.cleanup]
@@ -166,7 +171,7 @@ class RagJobs:
     async def list_jobs(self, index_key: str, offset: int, limit: int, include_history: bool):
         scope = (RagJob.index_key == index_key, RagJob.status != "deleting")
         latest = (
-            select(RagJob.id).where(*scope).ext(distinct_on(RagJob.source_id))
+            select(RagJob.id).where(*scope, RagJob.status != "skipped").ext(distinct_on(RagJob.source_id))
             .order_by(RagJob.source_id, RagJob.created_at.desc(), RagJob.id.desc())
         )
         filters = scope if include_history else (RagJob.id.in_(latest),)
@@ -241,7 +246,24 @@ class RagJobs:
             job.updated_at = func.now()
             return RagImport(
                 job.id, job.source_id, job.title, job.source_url, job.format, job.version, resumed, job.file_id,
+                confluence_space_id=job.confluence_space_id,
             )
+
+    async def active_confluence_version(self, source_id: str, index_key: str) -> int | None:
+        async with self.session() as session:
+            return await session.scalar(
+                select(RagJob.confluence_version)
+                .join(RagDocument, (RagDocument.source_id == RagJob.source_id)
+                      & (RagDocument.index_key == RagJob.index_key) & (RagDocument.active_version == RagJob.version))
+                .where(RagJob.source_id == source_id, RagJob.index_key == index_key)
+            )
+
+    async def skip_confluence(self, job: RagImport) -> None:
+        async with self.session(transaction=True) as session:
+            await session.execute(self.finish(job).values(
+                status="skipped", title=job.title, source_url=job.source_url,
+                confluence_version=job.confluence_version, version=None,
+            ))
 
     async def publish(self, job: RagImport, index_key: str, count: int, size_bytes: int) -> bool:
         async with self.session(transaction=True) as session:
@@ -249,6 +271,7 @@ class RagJobs:
             result = await session.execute(
                 self.finish(job).values(
                     status="succeeded", chunk_count=count, title=job.title, format=job.format, size_bytes=size_bytes,
+                    source_url=job.source_url, confluence_version=job.confluence_version,
                 ).returning(RagJob.id)
             )
             if result.scalar_one_or_none() is None:

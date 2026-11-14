@@ -95,6 +95,8 @@ class RagJob(Base):
     index_key: Mapped[str] = mapped_column(String(64))
     title: Mapped[str] = mapped_column(String(250))
     source_url: Mapped[str | None] = mapped_column(Text)
+    confluence_space_id: Mapped[str | None] = mapped_column(String(19))
+    confluence_version: Mapped[int | None] = mapped_column(BigInteger)
     file_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     size_bytes: Mapped[int | None] = mapped_column()
     format: Mapped[str] = mapped_column(String(4))
