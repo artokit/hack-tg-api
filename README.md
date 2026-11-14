@@ -86,16 +86,12 @@ PATCH принимает три обязательных nullable-поля: `use
 
 ## Публичный webhook
 
-Для примера используем `bars-bot.cheremha.ru`. Создайте A-запись `bars-bot` на публичный IPv4 хоста с Compose. Настройте сертификат Let's Encrypt в существующем HTTPS-сервере. Пример маршрута для Nginx внутри HTTPS-блока этого поддомена.
+Добавьте маршрут webhook в HTTPS-блок `api.cheremha.ru` в Nginx.
 
 ```nginx
 location = /channels/telegram/webhook {
     limit_except POST { deny all; }
     proxy_pass http://127.0.0.1:3000;
-}
-
-location / {
-    return 404;
 }
 ```
 
@@ -104,7 +100,7 @@ location / {
 ```powershell
 $telegramApi = "https://api.telegram.org/bot$env:BOT_TOKEN"
 $body = @{
-    url = "https://bars-bot.cheremha.ru/channels/telegram/webhook"
+    url = "https://api.cheremha.ru/channels/telegram/webhook"
     secret_token = $env:TELEGRAM_WEBHOOK_SECRET_TOKEN
     max_connections = 1
     allowed_updates = @("message")
@@ -156,8 +152,8 @@ Flue берёт адрес и ключ для чата и Vision из `CHAT_BASE
 - `POST /internal/rag/search` принимает `question`, `original_question` и необязательный
   `exact_id`. Возвращает фрагменты для тулзы и требует `X-Bot-Token: <BOT_API_TOKEN>`.
 
-Для открытия оригиналов из Telegram укажите в `RAG_FILES_PUBLIC_URL` публичный HTTPS-адрес
-бота и направьте путь скачивания `/file-service/{file_id}` в FastAPI. Например, для `bars-bot.cheremha.ru`:
+Ссылки на оригиналы из Telegram используют `RAG_FILES_PUBLIC_URL`, по умолчанию
+`https://api.cheremha.ru`. Направьте путь скачивания `/file-service/{file_id}` в FastAPI.
 
 ```nginx
 location ~ "^/file-service/[0-9a-f-]{36}$" {
