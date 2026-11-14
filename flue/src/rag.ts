@@ -107,12 +107,15 @@ async function search(item: SearchPart, original: string, signal: AbortSignal): 
 
 function cite(block: Evidence, proposed: string | null | undefined): RagSource | undefined {
   const visual = block.kind === 'visual' || block.kind === 'scan';
-  const quote = visual ? null : proposed?.trim() ?? '';
-  if (!visual && (!quote || !block.text.includes(quote))) return;
+  const words = proposed?.trim().split(/\s+/).filter(Boolean);
+  const pattern = words?.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+');
+  const match = !visual && pattern ? new RegExp(pattern, 'u').exec(block.text) : null;
+  if (!visual && !match) return;
+  const quote = match?.[0] ?? null;
   const url = block.format === 'pdf' && block.page && block.source_url && !block.source_url.includes('#')
     ? `${block.source_url}#page=${block.page}` : block.source_url;
   return {
-    id: quote ? `${block.id}:${block.text.indexOf(quote)}:${quote.length}` : block.id,
+    id: match ? `${block.id}:${match.index}:${match[0].length}` : block.id,
     title: block.title, url, page: block.page, section: block.section,
     identifiers: block.identifiers, quote, visual,
   };
