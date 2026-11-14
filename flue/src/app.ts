@@ -23,14 +23,12 @@ const channel = createTelegramChannel({
     const text = message?.text?.trim();
     if (!message?.from || message.chat.type !== 'private' || !text) return undefined;
 
-    const commandFor = /^\/[^\s@]+@([^\s]+)/.exec(text)?.[1].toLowerCase();
     await store.enqueue(update.update_id, message.chat.id, {
       text,
       userId: message.from.id,
       firstName: message.from.first_name,
       lastName: message.from.last_name,
       username: message.from.username,
-      commandFor,
     });
     void worker.scan();
     return undefined;

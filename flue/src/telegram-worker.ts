@@ -1,5 +1,5 @@
 import { AgentRunError, init } from '@flue/runtime';
-import { Api } from 'grammy';
+import { type Api, Composer, Context } from 'grammy';
 
 import { Bars } from './agents/bars.js';
 import { responseSubmission } from './db.js';
@@ -13,9 +13,10 @@ export class TelegramWorker {
   private readonly processing = new Set<string>();
   private readonly replies = new Map<string, Promise<void>>();
   private readonly output: TelegramOutput;
+  private readonly commands = new Composer<Context & { pending: PendingUpdate; answer: string }>();
   private scanning = false;
   private recovered = false;
-  private botUsername: string | undefined;
+  private botInfo: Context['me'] | undefined;
 
   constructor(
     private readonly store: TelegramStore,
@@ -23,6 +24,13 @@ export class TelegramWorker {
     private readonly instanceId: (chatId: number) => string,
   ) {
     this.output = new TelegramOutput(telegram, store);
+    this.commands.command('start', async (ctx) => {
+      const answer = await this.start(ctx.pending.payload, ctx.match);
+      ctx.answer = await this.store.commandAnswer(ctx.pending.sequence, answer);
+    });
+    this.commands.command('reset', async (ctx) => {
+      ctx.answer = await this.store.reset(ctx.pending, this.instanceId(ctx.chatId));
+    });
   }
 
   async scan(): Promise<void> {
@@ -54,13 +62,6 @@ export class TelegramWorker {
 
   private async admit(update: PendingUpdate): Promise<void> {
     if (update.payload.text.startsWith('/')) {
-      if (update.payload.commandFor) {
-        this.botUsername ??= (await this.telegram.getMe()).username.toLowerCase();
-        if (update.payload.commandFor !== this.botUsername) {
-          this.run(update, async () => {});
-          return;
-        }
-      }
       const answer = update.command_answer ?? await this.command(update);
       this.run(update, async () => {
         if (answer) {
@@ -130,29 +131,35 @@ export class TelegramWorker {
   }
 
   private async command(update: PendingUpdate): Promise<string> {
-    const { text, firstName, lastName } = update.payload;
-    const [token, argument] = text.split(/\s+/);
-    let answer: string;
-    switch (token.split('@')[0].toLowerCase()) {
-      case '/reset':
-        return await this.store.reset(update, this.instanceId(Number(update.chat_id)));
-      case '/start': {
-        if (argument?.startsWith('invite_')) {
-          const id = argument.slice('invite_'.length);
-          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-            answer = 'Некорректная ссылка приглашения.';
-          } else {
-            answer = await acceptInvite(id, update.payload);
-          }
-          break;
-        }
-        const name = [firstName, lastName].filter(Boolean).join(' ');
-        answer = `Привет, ${name}!\nНапиши свой вопрос. Чтобы начать новый диалог, отправь /reset.`;
-        break;
+    const { text, userId, firstName, lastName, username } = update.payload;
+    const [token] = text.split(/\s+/, 1);
+    this.botInfo ??= await this.telegram.getMe();
+    const ctx = new Context({
+      update_id: Number(update.update_id),
+      message: {
+        message_id: 0,
+        date: 0,
+        chat: { type: 'private', id: Number(update.chat_id), first_name: firstName },
+        from: { id: userId, is_bot: false, first_name: firstName, last_name: lastName, username },
+        text: token.toLowerCase() + text.slice(token.length),
+        entities: [{ type: 'bot_command', offset: 0, length: token.length }],
+      },
+    }, this.telegram, this.botInfo);
+    const command = Object.assign(ctx, { pending: update, answer: '' });
+    await this.commands.middleware()(command, async () => {});
+    return command.answer;
+  }
+
+  private async start(message: PendingUpdate['payload'], payload: string): Promise<string> {
+    const [argument] = payload.split(/\s+/, 1);
+    if (argument.startsWith('invite_')) {
+      const id = argument.slice('invite_'.length);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        return 'Некорректная ссылка приглашения.';
       }
-      default:
-        answer = '';
+      return await acceptInvite(id, message);
     }
-    return await this.store.commandAnswer(update.sequence, answer);
+    const name = [message.firstName, message.lastName].filter(Boolean).join(' ');
+    return `Привет, ${name}!\nНапиши свой вопрос. Чтобы начать новый диалог, отправь /reset.`;
   }
 }

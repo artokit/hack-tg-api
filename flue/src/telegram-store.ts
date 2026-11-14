@@ -8,7 +8,6 @@ export interface IncomingMessage {
   firstName: string;
   lastName?: string;
   username?: string;
-  commandFor?: string;
 }
 
 export interface PendingUpdate {
