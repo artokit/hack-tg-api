@@ -104,20 +104,22 @@ class RagIngest:
                 await self.jobs.mark_purged(job_id, version)
 
     async def purge_artifacts(self) -> None:
-        async def purge(artifact):
-            success = not artifact.version or await self.discard(artifact.version)
-            if artifact.delete_original and artifact.file_id:
+        async def purge(job_id: UUID, deleting: bool, artifact: dict) -> None:
+            version = artifact["version"]
+            file_id = artifact["file_id"]
+            success = not version or await self.discard(version)
+            if deleting and file_id:
                 try:
-                    await self.delete_file(artifact.file_id)
+                    await self.delete_file(UUID(file_id))
                 except RagUnavailable:
-                    log.warning("RAG could not delete original %s", artifact.file_id)
+                    log.warning("RAG could not delete original %s", file_id)
                     success = False
-            if artifact.upload_job_id:
-                self.discard_upload(artifact.upload_job_id)
-            await self.jobs.finish_cleanup(artifact, success=success)
+            if artifact["legacy"]:
+                self.discard_upload(job_id)
+            await self.jobs.finish_cleanup(job_id, artifact, deleting=deleting, success=success)
 
-        results = await asyncio.gather(*(purge(artifact) for artifact in await self.jobs.cleanup_candidates(self.index.key)),
-                                       return_exceptions=True)
+        rows = await self.jobs.cleanup_candidates(self.index.key)
+        results = await asyncio.gather(*(purge(**row) for row in rows), return_exceptions=True)
         for result in results:
             if isinstance(result, BaseException):
                 raise result

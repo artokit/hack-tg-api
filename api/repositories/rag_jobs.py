@@ -1,13 +1,13 @@
 from contextlib import asynccontextmanager
-from datetime import timedelta
-from uuid import UUID
+from datetime import datetime, timedelta, timezone
+from uuid import UUID, uuid4
 
 from sqlalchemy import case, delete, func, select, text, true, update
 from sqlalchemy.dialects.postgresql import distinct_on, insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from db.models import RagDocument, RagImportArtifact, RagJob
+from db.models import RagDocument, RagJob
 from models.rag import RETIRED_VERSION_GRACE, RagImport, RagQueueUnavailable
 
 
@@ -46,34 +46,31 @@ class RagJobs:
     async def source_for(self, job_id: UUID, index_key: str) -> str | None:
         async with self.session() as session:
             return await session.scalar(select(RagJob.source_id).where(
-                RagJob.id == job_id, RagJob.index_key == index_key,
+                RagJob.id == job_id, RagJob.index_key == index_key, RagJob.status != "deleting",
             ))
 
     @staticmethod
-    def retire_attempt(session: AsyncSession, job: RagJob, *, deleted: bool = False) -> None:
-        if not (job.version or job.file_id or (deleted and not job.source_url)):
-            return
-        session.add(RagImportArtifact(
-            index_key=job.index_key, source_id=job.source_id, version=job.version,
-            file_id=job.file_id,
-            upload_job_id=job.id if job.file_id is None and not job.source_url else None,
-            delete_original=deleted, retry_at=func.now() if deleted else func.now() + RETIRED_VERSION_GRACE,
-        ))
+    def record_cleanup(job: RagJob, version: str | None, file_id: UUID | None, *, legacy: bool = False) -> None:
+        if version or file_id or legacy:
+            job.cleanup = [*job.cleanup, {
+                "id": str(uuid4()), "version": version, "file_id": str(file_id) if file_id else None,
+                "legacy": legacy, "retry_at": None,
+            }]
 
     async def replace(
         self, job_id: UUID, index_key: str, source_id: str, title: str, format: str, file_id: UUID, size_bytes: int,
-    ) -> bool:
+    ) -> bool | None:
         async with self.session(transaction=True) as session:
             await self.lock_source(session, index_key, source_id)
             job = await session.scalar(select(RagJob).where(
                 RagJob.id == job_id, RagJob.index_key == index_key, RagJob.source_id == source_id,
             ).with_for_update())
             if job is None:
-                session.add(RagImportArtifact(
-                    index_key=index_key, source_id=source_id, file_id=file_id, delete_original=True, retry_at=func.now(),
-                ))
+                return None
+            if job.status == "deleting":
+                self.record_cleanup(job, None, file_id)
                 return False
-            self.retire_attempt(session, job)
+            self.record_cleanup(job, job.version, job.file_id, legacy=not job.file_id and not job.source_url)
             job.title = title
             job.format = format
             job.file_id = file_id
@@ -98,44 +95,63 @@ class RagJobs:
             await self.lock_source(session, index_key, source_id)
             scope = (RagJob.index_key == index_key, RagJob.source_id == source_id)
             jobs = list(await session.scalars(select(RagJob).where(*scope).with_for_update()))
-            if not any(job.id == job_id for job in jobs):
+            target = next((job for job in jobs if job.id == job_id), None)
+            if target is None:
                 return False
+            if target.status == "deleting":
+                return True
             await session.execute(delete(RagDocument).where(
                 RagDocument.index_key == index_key, RagDocument.source_id == source_id,
             ))
-            await session.execute(update(RagImportArtifact).where(
-                RagImportArtifact.index_key == index_key, RagImportArtifact.source_id == source_id,
-            ).values(delete_original=True, retry_at=func.now()))
             for job in jobs:
-                self.retire_attempt(session, job, deleted=True)
-            await session.execute(delete(RagJob).where(*scope))
+                if job.status == "deleting":
+                    continue
+                self.record_cleanup(job, job.version, job.file_id, legacy=not job.file_id and not job.source_url)
+                if job.cleanup:
+                    job.status = "deleting"
+                    job.cleanup = [{**artifact, "retry_at": None} for artifact in job.cleanup]
+                else:
+                    await session.delete(job)
             return True
 
     async def is_file_deleted(self, file_id: UUID) -> bool:
         async with self.session() as session:
-            return bool(await session.scalar(select(select(RagImportArtifact.id).where(
-                RagImportArtifact.file_id == file_id, RagImportArtifact.delete_original.is_(True),
+            return bool(await session.scalar(select(select(RagJob.id).where(
+                RagJob.status == "deleting", RagJob.cleanup.contains([{"file_id": str(file_id)}]),
             ).exists())))
 
     async def cleanup_candidates(self, index_key: str):
         async with self.session() as session:
-            active = select(RagDocument.active_version).where(
-                RagDocument.index_key == index_key, RagDocument.active_version == RagImportArtifact.version,
-            ).exists()
-            return list(await session.scalars(select(RagImportArtifact).where(
-                RagImportArtifact.index_key == index_key, RagImportArtifact.retry_at <= func.now(), ~active,
-            ).order_by(RagImportArtifact.retry_at, RagImportArtifact.id).limit(8)))
+            rows = await session.execute(text("""
+                SELECT j.id AS job_id, j.status = 'deleting' AS deleting, artifact
+                FROM rag_jobs AS j
+                CROSS JOIN LATERAL jsonb_array_elements(j.cleanup) AS items(artifact)
+                LEFT JOIN rag_documents AS d ON d.index_key = j.index_key AND d.source_id = j.source_id
+                WHERE j.index_key = :index_key
+                  AND COALESCE((artifact->>'retry_at')::timestamptz, '-infinity'::timestamptz) <= now()
+                  AND (j.status = 'deleting' OR (
+                    (artifact->>'version' IS NOT NULL OR CAST(artifact->>'legacy' AS boolean))
+                    AND (d.active_version IS NULL OR d.active_version <> (artifact->>'version'))
+                  ))
+                ORDER BY (artifact->>'retry_at')::timestamptz NULLS FIRST, j.id
+                LIMIT 8
+            """), {"index_key": index_key})
+            return rows.mappings().all()
 
-    async def finish_cleanup(self, artifact: RagImportArtifact, *, success: bool) -> None:
+    async def finish_cleanup(self, job_id: UUID, artifact: dict, *, deleting: bool, success: bool) -> None:
         async with self.session(transaction=True) as session:
-            where = (RagImportArtifact.id == artifact.id, RagImportArtifact.delete_original == artifact.delete_original)
+            job = await session.get(RagJob, job_id, with_for_update=True)
+            if job is None or (job.status == "deleting") != deleting or artifact not in job.cleanup:
+                return
+            remaining = [item for item in job.cleanup if item["id"] != artifact["id"]]
             if not success:
-                statement = update(RagImportArtifact).where(*where).values(retry_at=func.now() + timedelta(seconds=30))
-            elif not artifact.delete_original and artifact.file_id:
-                statement = update(RagImportArtifact).where(*where).values(version=None, upload_job_id=None, retry_at=None)
+                remaining.append({**artifact, "retry_at": (datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat()})
+            elif not deleting and artifact["file_id"]:
+                remaining.append({**artifact, "version": None, "legacy": False, "retry_at": None})
+            if deleting and not remaining:
+                await session.delete(job)
             else:
-                statement = delete(RagImportArtifact).where(*where)
-            await session.execute(statement)
+                job.cleanup = remaining
 
     async def read(self, job_id: UUID, index_key: str):
         async with self.session() as session:
@@ -143,17 +159,17 @@ class RagJobs:
                 select(
                     RagJob.id, RagJob.source_id, RagJob.file_id, RagJob.status, RagJob.error_code,
                     RagJob.version, RagJob.chunk_count, RagJob.created_at, RagJob.updated_at,
-                ).where(RagJob.id == job_id, RagJob.index_key == index_key)
+                ).where(RagJob.id == job_id, RagJob.index_key == index_key, RagJob.status != "deleting")
             )
             return result.mappings().one_or_none()
 
     async def list_jobs(self, index_key: str, offset: int, limit: int, include_history: bool):
-        scope = RagJob.index_key == index_key
+        scope = (RagJob.index_key == index_key, RagJob.status != "deleting")
         latest = (
-            select(RagJob.id).where(scope).ext(distinct_on(RagJob.source_id))
+            select(RagJob.id).where(*scope).ext(distinct_on(RagJob.source_id))
             .order_by(RagJob.source_id, RagJob.created_at.desc(), RagJob.id.desc())
         )
-        filters = (scope,) if include_history else (RagJob.id.in_(latest),)
+        filters = scope if include_history else (RagJob.id.in_(latest),)
         has_active_version = select(RagDocument.source_id).where(
             RagDocument.index_key == RagJob.index_key, RagDocument.source_id == RagJob.source_id,
         ).exists()
@@ -247,9 +263,15 @@ class RagJobs:
                     update(RagJob).where(RagJob.index_key == index_key, RagJob.version == previous)
                     .values(updated_at=func.now())
                 )
-                await session.execute(update(RagImportArtifact).where(
-                    RagImportArtifact.index_key == index_key, RagImportArtifact.version == previous,
-                ).values(retry_at=func.now() + RETIRED_VERSION_GRACE))
+                retired = await session.scalar(select(RagJob).where(
+                    RagJob.index_key == index_key, RagJob.source_id == job.source_id,
+                    RagJob.cleanup.contains([{"version": previous}]),
+                ).with_for_update())
+                if retired:
+                    retry_at = (datetime.now(timezone.utc) + RETIRED_VERSION_GRACE).isoformat()
+                    retired.cleanup = [
+                        {**item, "retry_at": retry_at} if item["version"] == previous else item for item in retired.cleanup
+                    ]
             await session.execute(
                 insert(RagDocument)
                 .values(source_id=job.source_id, active_version=job.version, index_key=index_key)

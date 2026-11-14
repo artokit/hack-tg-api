@@ -56,8 +56,12 @@ class RagService:
         title = title or name[:250]
         if replaces is None:
             await self.jobs.enqueue(job_id, self.index.key, source_id, title, None, format, file_id, len(data))
-        elif not await self.jobs.replace(job_id, self.index.key, source_id, title, format, file_id, len(data)):
-            raise RagDocumentNotFound
+        else:
+            replaced = await self.jobs.replace(job_id, self.index.key, source_id, title, format, file_id, len(data))
+            if replaced is None:
+                await self.files.delete(file_id)
+            if not replaced:
+                raise RagDocumentNotFound
         return job_id, source_id, file_id
 
     async def replace_file(self, job_id: UUID, title: str | None, filename: str, data: bytes) -> tuple[UUID, str, UUID]:

@@ -13,7 +13,9 @@ from sqlalchemy import (
     Uuid,
     false,
     func,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.db import Base
@@ -100,6 +102,7 @@ class RagJob(Base):
     error_code: Mapped[str | None] = mapped_column(String(32))
     version: Mapped[str | None] = mapped_column(String(36))
     chunk_count: Mapped[int | None] = mapped_column()
+    cleanup: Mapped[list[dict]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -107,17 +110,3 @@ class RagJob(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-
-
-class RagImportArtifact(Base):
-    __tablename__ = "rag_import_artifacts"
-    __table_args__ = (Index("ix_rag_import_artifacts_source", "index_key", "source_id"),)
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    index_key: Mapped[str] = mapped_column(String(64))
-    source_id: Mapped[str] = mapped_column(String(100))
-    version: Mapped[str | None] = mapped_column(String(36))
-    file_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
-    upload_job_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
-    delete_original: Mapped[bool] = mapped_column(Boolean, default=False)
-    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
