@@ -1,4 +1,4 @@
-import { createModels, createProvider, type ImageContent } from '@earendil-works/pi-ai';
+import { createProvider, type ProviderRequestOptions } from '@earendil-works/pi-ai';
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy';
 
 import { httpUrl, required } from './config.js';
@@ -11,9 +11,40 @@ if (!Number.isSafeInteger(contextWindow) || contextWindow < 1024) {
 
 const apiKey = process.env.CHAT_API_KEY?.trim();
 const baseUrl = httpUrl('CHAT_BASE_URL');
+const documentModelId = `${modelId}:documents`;
+export const ragModelId = `bars-chat/${documentModelId}`;
+const openrouter = new URL(baseUrl).hostname === 'openrouter.ai';
 
 const api = openAICompletionsApi();
 const requestLimits = { timeoutMs: 20_000, maxRetries: 0 };
+const chatModel = {
+  id: modelId,
+  name: modelId,
+  api: 'openai-completions' as const,
+  provider: 'bars-chat',
+  baseUrl,
+  reasoning: false,
+  input: ['text' as const],
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  contextWindow,
+  maxTokens: Math.min(Math.floor(contextWindow / 8), 1600),
+};
+
+function requestOptions<T extends ProviderRequestOptions>(model: string, options: T | undefined) {
+  if (model !== documentModelId) return { ...options, ...requestLimits };
+  return {
+    ...options,
+    ...requestLimits,
+    async onPayload(payload: unknown, model: Parameters<NonNullable<T['onPayload']>>[1]) {
+      const transformed = await options?.onPayload?.(payload, model);
+      return {
+        ...((transformed ?? payload) as Record<string, unknown>),
+        model: modelId,
+        ...(openrouter ? { provider: { data_collection: 'deny', zdr: true } } : {}),
+      };
+    },
+  };
+}
 
 export const provider = createProvider({
   id: 'bars-chat',
@@ -32,51 +63,14 @@ export const provider = createProvider({
       }),
     },
   },
-  models: [{
-    id: modelId,
-    name: modelId,
-    api: 'openai-completions',
-    provider: 'bars-chat',
-    baseUrl,
-    reasoning: false,
+  models: [chatModel, {
+    ...chatModel,
+    id: documentModelId,
     input: ['text', 'image'],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow,
-    maxTokens: Math.min(Math.floor(contextWindow / 8), 1600),
+    maxTokens: Math.min(Math.floor(contextWindow / 2), 4200),
   }],
   api: {
-    stream: (model, context, options) => api.stream(model, context, { ...options, ...requestLimits }),
-    streamSimple: (model, context, options) => api.streamSimple(model, context, { ...options, ...requestLimits }),
+    stream: (model, context, options) => api.stream(model, context, requestOptions(model.id, options)),
+    streamSimple: (model, context, options) => api.streamSimple(model, context, requestOptions(model.id, options)),
   },
 });
-
-const models = createModels();
-models.setProvider(provider);
-const chatModel = provider.getModels()[0];
-const openrouter = new URL(baseUrl).hostname === 'openrouter.ai';
-
-export async function runModel(
-  instructions: string, text: string, signal: AbortSignal, maxTokens: number, image?: ImageContent,
-): Promise<string> {
-  const result = await models.completeSimple(chatModel, {
-    systemPrompt: instructions,
-    messages: [{
-      role: 'user',
-      timestamp: Date.now(),
-      content: image ? [{ type: 'text', text }, image] : text,
-    }],
-  }, {
-    signal,
-    maxTokens: Math.min(maxTokens, Math.floor(contextWindow / 2)),
-    ...(openrouter ? {
-      onPayload(payload: unknown) {
-        return {
-          ...(payload as Record<string, unknown>),
-          provider: { data_collection: 'deny', zdr: true },
-        };
-      },
-    } : {}),
-  });
-  if (result.stopReason !== 'stop') throw new Error('Model did not return a complete response');
-  return result.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('').trim();
-}
