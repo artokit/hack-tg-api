@@ -4,6 +4,7 @@ import { Api } from 'grammy';
 import { Bars } from './agents/bars.js';
 import { responseSubmission } from './db.js';
 import { acceptInvite } from './invites-api.js';
+import { ragEnabled, ragUnavailable, renderRag, requiresRag } from './rag.js';
 import { TelegramOutput } from './telegram-output.js';
 import { type PendingUpdate, TelegramStore } from './telegram-store.js';
 
@@ -91,7 +92,10 @@ export class TelegramWorker {
         const reply = await agent.read(submissionId);
         const responseId = reply.metadata?.telegramResponseId;
         if (typeof responseId === 'string') deliveryId = `response:${responseId}`;
-        replyText = reply.text.trim();
+        const ragResults = reply.data.ragAnswer;
+        replyText = ragResults?.length
+          ? renderRag(...ragResults)
+          : ragEnabled && requiresRag(update.payload.text) ? ragUnavailable : reply.text.trim();
       } catch (error) {
         if (!(error instanceof AgentRunError)) throw error;
         this.logFailure(update, error);

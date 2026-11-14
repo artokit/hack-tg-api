@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import AnyHttpUrl, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -55,3 +55,30 @@ class InviteSettings(BaseSettings):
         default=None, min_length=5, max_length=32, pattern=r"^[A-Za-z][A-Za-z0-9_]*$"
     )
     bot_api_token: SecretStr | None = Field(default=None, min_length=32)
+
+
+class RagSettings(BaseSettings):
+    model_config = DatabaseSettings.model_config
+
+    rag_enabled: bool = False
+    rag_service_token: SecretStr | None = Field(default=None, min_length=32)
+    rag_qdrant_url: AnyHttpUrl = AnyHttpUrl("http://qdrant:6333")
+    rag_qdrant_api_key: SecretStr | None = None
+    rag_collection: str = Field(default="bars_docs_qwen3_v1", pattern=r"^[a-zA-Z0-9_\-]+$")
+    rag_embedding_base_url: AnyHttpUrl | None = None
+    rag_embedding_model: str = "Qwen/Qwen3-Embedding-8B"
+    rag_embedding_api_key: SecretStr | None = None
+    rag_luna_base_url: AnyHttpUrl | None = None
+    rag_luna_model: str = "gpt-6-luna"
+    rag_luna_api_key: SecretStr | None = None
+    rag_max_upload_bytes: int = Field(default=25 * 1024 * 1024, ge=1024, le=100 * 1024 * 1024)
+
+    @model_validator(mode="after")
+    def check_rag_settings(self):
+        if self.rag_enabled and not all(
+            (self.rag_service_token, self.rag_embedding_base_url, self.rag_luna_base_url)
+        ):
+            raise ValueError(
+                "RAG_SERVICE_TOKEN, RAG_EMBEDDING_BASE_URL and RAG_LUNA_BASE_URL are required"
+            )
+        return self

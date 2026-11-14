@@ -7,6 +7,7 @@ from routes.employees import router as employees_router
 from routes.health import router as health_router
 from routes.invites import private_router as private_invites_router
 from routes.invites import router as invites_router
+from routes.rag import router as rag_router
 from routes.tickets import router as tickets_router
 
 app = FastAPI(
@@ -21,6 +22,7 @@ app.include_router(employees_router)
 app.include_router(tickets_router)
 app.include_router(invites_router)
 app.include_router(private_invites_router)
+app.include_router(rag_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

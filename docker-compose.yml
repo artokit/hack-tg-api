@@ -18,6 +18,13 @@ services:
       timeout: 5s
       retries: 10
 
+  qdrant:
+    image: qdrant/qdrant:v1.20.0
+    restart: unless-stopped
+    profiles: [rag]
+    volumes:
+      - qdrant_data:/qdrant/storage
+
   api:
     build: ./api
     restart: unless-stopped
@@ -35,6 +42,18 @@ services:
       JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-60}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
       BOT_API_TOKEN: ${BOT_API_TOKEN:-}
+      RAG_ENABLED: ${RAG_ENABLED:-false}
+      RAG_SERVICE_TOKEN: ${RAG_SERVICE_TOKEN:-}
+      RAG_QDRANT_URL: ${RAG_QDRANT_URL:-http://qdrant:6333}
+      RAG_QDRANT_API_KEY: ${RAG_QDRANT_API_KEY:-}
+      RAG_COLLECTION: ${RAG_COLLECTION:-bars_docs_qwen3_v1}
+      RAG_EMBEDDING_BASE_URL: ${RAG_EMBEDDING_BASE_URL:-}
+      RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-Qwen/Qwen3-Embedding-8B}
+      RAG_EMBEDDING_API_KEY: ${RAG_EMBEDDING_API_KEY:-}
+      RAG_LUNA_BASE_URL: ${RAG_LUNA_BASE_URL:-}
+      RAG_LUNA_MODEL: ${RAG_LUNA_MODEL:-gpt-6-luna}
+      RAG_LUNA_API_KEY: ${RAG_LUNA_API_KEY:-}
+      RAG_MAX_UPLOAD_BYTES: ${RAG_MAX_UPLOAD_BYTES:-26214400}
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     healthcheck:
@@ -63,6 +82,8 @@ services:
       CHAT_MODEL: ${CHAT_MODEL:-}
       CHAT_API_KEY: ${CHAT_API_KEY:-}
       CHAT_CONTEXT_WINDOW: ${CHAT_CONTEXT_WINDOW:-8192}
+      RAG_ENABLED: ${RAG_ENABLED:-false}
+      RAG_SERVICE_TOKEN: ${RAG_SERVICE_TOKEN:-}
     ports:
       - "127.0.0.1:${FLUE_PORT:-3000}:3000"
     healthcheck:
@@ -73,3 +94,4 @@ services:
 
 volumes:
   postgres_flue_data:
+  qdrant_data:

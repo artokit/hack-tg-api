@@ -69,8 +69,32 @@ Invoke-RestMethod "$telegramApi/getWebhookInfo"
 
 После проверки остановите прежний polling основного бота и зарегистрируйте webhook для его токена. Для отката остановите Flue, вызовите `deleteWebhook` с `drop_pending_updates=false` и запустите предыдущую версию с её БД. Telegram позволяет использовать один способ получения апдейтов на токен.
 
+## База документации
+
+Задайте `RAG_ENABLED=true`, отдельный `RAG_SERVICE_TOKEN` длиной от 32 символов и базовые URL
+совместимых API в `RAG_EMBEDDING_BASE_URL` и `RAG_LUNA_BASE_URL`. Указывайте URL
+без `/embeddings` или `/chat/completions`, например `https://provider.example/v1`.
+Первый сервис должен обслуживать Qwen3 Embedding 8B и возвращать 4096 чисел на вход.
+Второй должен обслуживать Luna с поддержкой изображений.
+Для локального Qdrant используйте `docker compose --profile rag up -d --build --wait`,
+для внешнего укажите `RAG_QDRANT_URL` и запустите Compose без профиля `rag`.
+До добавления списка Telegram ID загружайте только материалы, разрешённые для демо.
+
+- `POST /internal/rag/documents` принимает multipart поля `file`, `source_id`, `title` и
+  необязательный `source_url`. Поддерживаются PDF, DOCX и Markdown в UTF-8. Повторная загрузка
+  с тем же `source_id` создаёт новую версию. Ручка возвращает `202` и `job_id`.
+  Из PDF и DOCX извлекаются встроенные изображения, из Markdown — встроенные изображения
+  в формате data URI. Обычные ссылки на изображения остаются частью текста.
+- `GET /internal/rag/jobs/{job_id}` возвращает статус задания, ошибку или число опубликованных
+  фрагментов. Задание и временные байты файла переживают перезапуск API. При ошибке остаётся
+  доступна ранее опубликованная версия. Загрузка и статус также доступны из `/docs` FastAPI.
+  Для ссылки на конкретную версию документа передавайте постоянный URL этой версии.
+- `POST /internal/rag/answer` принимает JSON с `question` и необязательным `standalone_question`.
+  Возвращает ответ по частям и источники. Все три ручки требуют
+  `Authorization: Bearer <RAG_SERVICE_TOKEN>`.
+
 ## Проверки разработки
 
-После `npm ci` в `flue/` выполните `npm run typecheck`, `npm run build` и `npm test`. Для теста реального Flue с подменой Telegram и модели задайте `TEST_FLUE_DATABASE_URL` с URL отдельной PostgreSQL БД.
+После `npm ci` в `flue/` выполните `npm run typecheck`, `npm run build` и `npm test`. Для теста реального Flue с подменой Telegram и модели задайте `TEST_FLUE_DATABASE_URL` с URL отдельной PostgreSQL БД. Для тестов API примените миграции в тестовую БД, задайте `TEST_DATABASE_URL` с префиксом `postgresql+asyncpg://` и запустите `python -m pytest` из `api/`. Интеграционный тест RAG использует отдельный Qdrant из `TEST_RAG_QDRANT_URL`; путь к «БП Командировка.pdf» передаётся в `TEST_RAG_TRIP_PDF`. Для Python-тестов нужен `pytest`.
 
 Процесс Flue рассчитан на одну реплику. Сбой между отправкой в Telegram и подтверждением результата в БД переводит отправку в состояние `unknown`. Запись доступна в `bars_telegram_deliveries`. Такие отправки требуют проверки по журналу и чату, поскольку автоматический повтор может отправить сообщение второй раз.

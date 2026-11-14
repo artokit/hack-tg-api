@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import pg from 'pg';
 
 import { splitReply } from '../src/telegram-output.js';
+import { renderRag } from '../src/rag.js';
 
 test('plain-text fallback preserves Unicode at Telegram message boundaries', () => {
   const text = 'а'.repeat(4095) + '🙂' + 'б'.repeat(4097);
@@ -14,6 +15,31 @@ test('plain-text fallback preserves Unicode at Telegram message boundaries', () 
   assert.equal(parts.join(''), text);
   assert.equal(parts[0].length, 4095);
   assert.ok(parts.every((part) => part.length <= 4096));
+});
+
+test('long RAG answers keep a source for each part in a single message', () => {
+  const sources = Array.from({ length: 18 }, (_, index) => ({
+    id: String(index),
+    title: `Источник ${index + 1}`,
+    page: index + 1,
+    url: `https://example.com/doc.pdf#page=${index + 1}`,
+    section: [],
+    quote: '['.repeat(330),
+    visual: false,
+  }));
+  const parts = Array.from({ length: 6 }, (_, index) => ({
+    question: 'Вопрос',
+    status: 'supported',
+    statement: `Часть ${index + 1}. ${'🙂*'.repeat(160)}`,
+    source_ids: sources.slice(index * 3, index * 3 + 3).map(({ id }) => id),
+    clarification: '',
+  }));
+  const rendered = renderRag({ status: 'answered', parts, sources });
+  assert.equal(splitReply(rendered).length, 1);
+  for (let index = 0; index < 6; index++) {
+    assert.ok(rendered.includes(`Часть ${index + 1}`));
+    assert.ok(rendered.includes(`#page=${index * 3 + 1})`));
+  }
 });
 
 function listen(server: Server): Promise<string> {
@@ -53,6 +79,7 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
   let blockModel = false;
   let run: ChildProcess | undefined;
   let serverLogs = '';
+  let ragRequests = 0;
 
   const mock = createServer(async (req, res) => {
     try {
@@ -60,6 +87,28 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+      if (path === '/internal/rag/answer') {
+        ++ragRequests;
+        assert.equal(req.headers.authorization, 'Bearer test-rag-service-token');
+        assert.equal(typeof body.question, 'string');
+        if (body.question.includes('недоступность')) {
+          res.writeHead(503).end();
+          return;
+        }
+        const id = 'test:2';
+        res.end(JSON.stringify({
+          status: 'answered',
+          parts: [{
+            question: body.question, status: 'supported', statement: 'Измеряйте работу системы.',
+            source_ids: [id], clarification: '',
+          }],
+          sources: [{
+            id, title: 'NIST', url: 'https://example.com/nist.pdf#page=40', page: 40,
+            section: [], quote: 'Measure GAI system performance', visual: false,
+          }],
+        }));
+        return;
+      }
       if (path.endsWith('/chat/completions')) {
         authorization = req.headers.authorization;
         requests.push(body);
@@ -74,6 +123,24 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
               ? message.content.map((part) => part.text ?? '').join('') : '').join(' / ');
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         const message = { id: 'chatcmpl-test', object: 'chat.completion.chunk', created: 1, model: 'test' };
+        const last = body.messages.findLast((entry: { role: string }) => entry.role === 'user')?.content;
+        if (/MS-2\.11-00[23]/.test(JSON.stringify(last ?? ''))) {
+          assert.ok(body.tools?.some((tool: { function: { name: string } }) =>
+            tool.function.name === 'answer_from_docs'));
+          res.write(`data: ${JSON.stringify({
+            ...message, choices: [{ index: 0, delta: {
+              role: 'assistant', content: 'Этот текст не должен попасть в Telegram.',
+              tool_calls: [{
+                index: 0, id: 'call_rag', type: 'function',
+                function: { name: 'answer_from_docs', arguments: '{}' },
+              }],
+            }, finish_reason: null }],
+          })}\n\n`);
+          res.end(`data: ${JSON.stringify({
+            ...message, choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }],
+          })}\n\ndata: [DONE]\n\n`);
+          return;
+        }
         res.write(`data: ${JSON.stringify({
           ...message, choices: [{ index: 0, delta: { role: 'assistant', content: `**${text}**` }, finish_reason: null }],
         })}\n\n`);
@@ -114,10 +181,13 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
           TELEGRAM_API_ROOT: mockUrl,
           FLUE_DATABASE_URL: connectionString,
           PORT: new URL(appUrl).port,
+          API_URL: mockUrl,
           CHAT_BASE_URL: `${mockUrl}/v1`,
           CHAT_API_KEY: '',
           CHAT_MODEL: 'test',
           CHAT_CONTEXT_WINDOW: '8192',
+          RAG_ENABLED: 'true',
+          RAG_SERVICE_TOKEN: 'test-rag-service-token',
         },
       });
       run.stdout?.on('data', (chunk) => { serverLogs += chunk; });
@@ -198,6 +268,26 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
     await until(async () => !await pending(), 'final settlement');
     assert.equal(calls.filter((call) => call.text?.includes('Привет')).length, 1);
     assert.equal(JSON.stringify(requests.at(-1)).includes('первый'), false);
+    assert.equal(ragRequests, 0);
+
+    assert.equal((await send(9, 'Что рекомендует MS-2.11-002?')).status, 200);
+    const documented = await until(
+      () => sent('sendRichMessage', 'Measure GAI system performance'), 'RAG citation',
+    );
+    assert.ok(documented.text?.includes('https://example.com/nist.pdf#page=40'));
+    assert.equal(calls.some((call) => call.text?.includes('Этот текст')), false);
+    assert.equal(ragRequests, 1);
+    await until(async () => !await pending(), 'RAG delivery');
+
+    assert.equal((await send(10, 'Проверь недоступность MS-2.11-003.')).status, 200);
+    await until(() => sent('sendRichMessage', 'Поиск по документации сейчас недоступен'), 'RAG unavailable');
+    assert.equal(ragRequests, 2);
+    await until(async () => !await pending(), 'RAG error delivery');
+
+    assert.equal((await send(11, 'Что говорит наш регламент?')).status, 200);
+    await until(async () => !await pending(), 'missing RAG tool delivery');
+    assert.equal(calls.filter((call) => call.text?.includes('Поиск по документации сейчас недоступен')).length, 2);
+    assert.equal(ragRequests, 2);
   } catch (error) {
     console.error(serverLogs, calls);
     throw error;

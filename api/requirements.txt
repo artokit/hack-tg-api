@@ -3,8 +3,13 @@ asyncpg==0.32.0
 bcrypt==5.0.0
 fastapi==0.162.4
 httpx==0.28.1
+markdown-it-py==4.3.0
+pdfplumber==0.11.10
 pydantic==2.13.5
+pydantic-ai-slim[openai]==2.68.0
 pydantic-settings==2.16.2
+python-docx==1.2.0
+python-multipart==0.0.33
 PyJWT==2.15.1
 sqlalchemy[asyncio]==2.1.8
 uvicorn==0.54.0
