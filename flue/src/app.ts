@@ -26,9 +26,9 @@ const channel = createTelegramChannel({
     await store.enqueue(update.update_id, message.chat.id, {
       text,
       userId: message.from.id,
-      firstName: message.from.first_name,
-      lastName: message.from.last_name,
-      username: message.from.username,
+      firstName: message.from.first_name ?? null,
+      lastName: message.from.last_name ?? null,
+      username: message.from.username ?? null,
     });
     void worker.scan();
     return undefined;

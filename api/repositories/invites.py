@@ -53,7 +53,9 @@ class InviteRepository:
         last_name: str | None,
     ) -> Employee:
         employees = EmployeeRepository(self._session)
-        employee = employees.add(telegram_id, first_name, last_name, username)
+        employee = employees.add(
+            telegram_id, first_name, last_name, username, is_parsed=True
+        )
         if invite.count_of_use == 1:
             await self._session.delete(invite)
         else:
