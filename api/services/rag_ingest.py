@@ -137,7 +137,7 @@ class RagIngest:
             await self.jobs.fail(job, "import_failed")
             await self.discard(job.version)
         else:
-            if await self.jobs.publish(job, self.index.key, len(entries)):
+            if await self.jobs.publish(job, self.index.key, len(entries), len(data)):
                 log.info("RAG import %s published %d chunks", job.id, len(entries))
             else:
                 await self.discard(job.version)

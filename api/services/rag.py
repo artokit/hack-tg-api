@@ -1,6 +1,7 @@
 import logging
 import re
 from pathlib import PurePath
+from urllib.parse import unquote, urlsplit
 from uuid import UUID, uuid4
 
 from models.rag import DocumentTooLarge, InvalidDocument, RagQueueUnavailable, RagUnavailable
@@ -51,7 +52,7 @@ class RagService:
         source_id = source_id or str(uuid4())
         file_id = await self.files.upload(name, data)
         await self.jobs.enqueue(
-            job_id, self.index.key, source_id, title or name[:250], None, format, file_id,
+            job_id, self.index.key, source_id, title or name[:250], None, format, file_id, len(data),
         )
         return job_id, source_id, file_id
 
@@ -63,6 +64,19 @@ class RagService:
 
     async def read_job(self, job_id: UUID):
         return await self.jobs.read(job_id, self.index.key)
+
+    async def list_jobs(self, page: int, page_size: int, include_history: bool):
+        rows, total = await self.jobs.list_jobs(self.index.key, (page - 1) * page_size, page_size, include_history)
+        items = []
+        for row in rows:
+            item = dict(row)
+            url = item.pop("source_url")
+            if not item["title"]:
+                address = urlsplit(url) if url else None
+                name = unquote(address.path.rsplit("/", 1)[-1]).strip() if address else ""
+                item["title"] = (name or (address.hostname if address else None) or item["source_id"])[:250]
+            items.append(item)
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
 
     async def search(self, question: str, exact_id: str | None, original: str) -> list[dict]:
         allowed = identifiers(original) or identifiers(question)

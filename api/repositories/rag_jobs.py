@@ -2,8 +2,8 @@ from contextlib import asynccontextmanager
 from datetime import timedelta
 from uuid import UUID
 
-from sqlalchemy import case, func, select, text, update
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import case, func, select, text, true, update
+from sqlalchemy.dialects.postgresql import distinct_on, insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -26,13 +26,13 @@ class RagJobs:
 
     async def enqueue(
         self, job_id: UUID, index_key: str, source_id: str, title: str | None,
-        source_url: str | None, format: str, file_id: UUID | None = None,
+        source_url: str | None, format: str, file_id: UUID | None = None, size_bytes: int | None = None,
     ) -> None:
         async with self.session(transaction=True) as session:
             session.add(RagJob(
                 id=job_id,
                 index_key=index_key, source_id=source_id, title=title or "", source_url=source_url,
-                format=format, file_id=file_id,
+                format=format, file_id=file_id, size_bytes=size_bytes,
             ))
 
     async def read(self, job_id: UUID, index_key: str):
@@ -44,6 +44,34 @@ class RagJobs:
                 ).where(RagJob.id == job_id, RagJob.index_key == index_key)
             )
             return result.mappings().one_or_none()
+
+    async def list_jobs(self, index_key: str, offset: int, limit: int, include_history: bool):
+        scope = RagJob.index_key == index_key
+        latest = (
+            select(RagJob.id).where(scope).ext(distinct_on(RagJob.source_id))
+            .order_by(RagJob.source_id, RagJob.created_at.desc(), RagJob.id.desc())
+        )
+        filters = (scope,) if include_history else (RagJob.id.in_(latest),)
+        has_active_version = select(RagDocument.source_id).where(
+            RagDocument.index_key == RagJob.index_key, RagDocument.source_id == RagJob.source_id,
+        ).exists()
+        page = (
+            select(
+                RagJob.id, RagJob.source_id, RagJob.file_id, RagJob.status, RagJob.error_code,
+                RagJob.version, RagJob.chunk_count, RagJob.created_at, RagJob.updated_at,
+                RagJob.title, RagJob.source_url, RagJob.format, RagJob.size_bytes,
+                has_active_version.label("has_active_version"),
+            ).where(*filters).order_by(RagJob.created_at.desc(), RagJob.id.desc())
+            .offset(offset).limit(limit).subquery()
+        )
+        total = select(func.count().label("total")).select_from(RagJob).where(*filters).subquery()
+        async with self.session() as session:
+            result = await session.execute(
+                select(page, total.c.total).select_from(total.outerjoin(page, true()))
+                .order_by(page.c.created_at.desc(), page.c.id.desc())
+            )
+            rows = result.mappings().all()
+            return [{key: value for key, value in row.items() if key != "total"} for row in rows if row["id"]], rows[0]["total"]
 
     @asynccontextmanager
     async def worker_lock(self, index_key: str):
@@ -97,10 +125,12 @@ class RagJobs:
                 job.id, job.source_id, job.title, job.source_url, job.format, job.version, resumed, job.file_id,
             )
 
-    async def publish(self, job: RagImport, index_key: str, count: int) -> bool:
+    async def publish(self, job: RagImport, index_key: str, count: int, size_bytes: int) -> bool:
         async with self.session(transaction=True) as session:
             result = await session.execute(
-                self.finish(job).values(status="succeeded", chunk_count=count).returning(RagJob.id)
+                self.finish(job).values(
+                    status="succeeded", chunk_count=count, title=job.title, format=job.format, size_bytes=size_bytes,
+                ).returning(RagJob.id)
             )
             if result.scalar_one_or_none() is None:
                 return False

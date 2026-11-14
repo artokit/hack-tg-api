@@ -7,7 +7,9 @@ from fastapi.responses import Response, StreamingResponse
 from depends import get_current_user, get_rag_originals, get_rag_service, require_bot_token
 from models.rag import DocumentTooLarge, InvalidDocument, RagUnavailable
 from repositories.rag_files import MAX_DOCUMENT_BYTES
-from schemas.rag import SOURCE_ID_PATTERN, RagEvidenceRead, RagJobCreated, RagJobRead, RagSearchRequest, RagUrlRequest
+from schemas.rag import (
+    SOURCE_ID_PATTERN, RagEvidenceRead, RagJobCreated, RagJobPage, RagJobRead, RagSearchRequest, RagUrlRequest,
+)
 from services.rag import RagOriginals, RagService, UnexpectedDocumentId
 
 
@@ -94,6 +96,19 @@ async def open_file(
         "cache-control": "private, no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
     })
     return StreamingResponse(stream(), status_code=upstream.status_code, headers=headers)
+
+
+@router.get("/rag/jobs", response_model=RagJobPage, dependencies=[Depends(get_current_user)])
+async def list_jobs(
+    service: Service,
+    page: Annotated[int, Query(ge=1, le=2**31 - 1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    include_history: bool = False,
+):
+    try:
+        return await service.list_jobs(page, page_size, include_history)
+    except RagUnavailable as error:
+        raise HTTPException(status_code=503, detail="Import list temporarily unavailable") from error
 
 
 @router.get("/rag/jobs/{job_id}", response_model=RagJobRead, dependencies=[Depends(get_current_user)])
