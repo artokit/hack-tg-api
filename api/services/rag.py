@@ -88,7 +88,8 @@ class RagService:
         job_id = uuid4()
         source_id = f"confluence:{page_id}"
         await self.jobs.enqueue(
-            job_id, self.index.key, source_id, None, None, "html", confluence_space_id=space_id,
+            job_id, self.index.key, source_id, None, None, "html",
+            source_kind="confluence", source_locator={"space_id": space_id, "page_id": page_id},
         )
         return job_id, source_id
 

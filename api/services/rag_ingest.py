@@ -138,9 +138,11 @@ class RagIngest:
             return False
         return True
 
-    async def load_confluence(self, space_id: str, source_id: str) -> ConfluencePageRead:
+    async def load_confluence(self, locator: dict[str, str]) -> ConfluencePageRead:
         try:
-            page = await self.confluence.get_page(space_id, int(source_id.removeprefix("confluence:")))
+            page = await self.confluence.get_page(locator["space_id"], int(locator["page_id"]))
+        except (KeyError, ValueError) as error:
+            raise InvalidDocument("invalid_source_locator") from error
         except LookupError as error:
             raise InvalidDocument("confluence_page_not_found") from error
         except ConfluenceNotConfiguredError as error:
@@ -158,17 +160,19 @@ class RagIngest:
             async with asyncio.timeout(1800):
                 if job.resumed:
                     await self.index.discard(job.version)
-                if job.confluence_space_id is not None:
-                    page = await self.load_confluence(job.confluence_space_id, job.source_id)
-                    job = replace(job, title=page.title[:250], source_url=page.url, confluence_version=page.version)
-                    active = await self.jobs.active_confluence_version(job.source_id, self.index.key)
-                    if active is not None and page.version <= active:
-                        await self.jobs.skip_confluence(job)
+                if job.source_kind == "confluence":
+                    page = await self.load_confluence(job.source_locator or {})
+                    job = replace(job, title=page.title[:250], source_url=page.url, source_revision=str(page.version))
+                    active = await self.jobs.active_source_revision(job.source_id, self.index.key)
+                    if active is not None and page.version <= int(active):
+                        await self.jobs.skip(job)
                         log.info("RAG import %s skipped Confluence version %d", job.id, page.version)
                         return
                     data = page.content_html.encode("utf-8")
                     if len(data) > MAX_DOCUMENT_BYTES:
                         raise DocumentTooLarge("document_too_large")
+                elif job.source_kind is not None:
+                    raise InvalidDocument("unsupported_source_kind")
                 elif job.format == "url" and job.source_url:
                     data, format, default_title = await load_url(job.source_url)
                     job = replace(job, title=job.title or default_title[:250], format=format)

@@ -27,14 +27,15 @@ class RagJobs:
     async def enqueue(
         self, job_id: UUID, index_key: str, source_id: str, title: str | None,
         source_url: str | None, format: str, file_id: UUID | None = None, size_bytes: int | None = None,
-        *, confluence_space_id: str | None = None,
+        *, source_kind: str | None = None, source_locator: dict[str, str] | None = None,
     ) -> None:
         async with self.session(transaction=True) as session:
             await self.lock_source(session, index_key, source_id)
             session.add(RagJob(
                 id=job_id,
                 index_key=index_key, source_id=source_id, title=title or "", source_url=source_url,
-                format=format, file_id=file_id, size_bytes=size_bytes, confluence_space_id=confluence_space_id,
+                format=format, file_id=file_id, size_bytes=size_bytes,
+                source_kind=source_kind, source_locator=source_locator,
             ))
 
     @staticmethod
@@ -48,7 +49,7 @@ class RagJobs:
         async with self.session() as session:
             return await session.scalar(select(RagJob.source_id).where(
                 RagJob.id == job_id, RagJob.index_key == index_key, RagJob.status != "deleting",
-                RagJob.confluence_space_id.is_(None),
+                RagJob.source_kind.is_(None),
             ))
 
     @staticmethod
@@ -110,7 +111,7 @@ class RagJobs:
                     continue
                 self.record_cleanup(
                     job, job.version, job.file_id,
-                    legacy=not job.file_id and not job.source_url and job.confluence_space_id is None,
+                    legacy=not job.file_id and not job.source_url and job.source_kind is None,
                 )
                 if job.cleanup:
                     job.status = "deleting"
@@ -246,23 +247,23 @@ class RagJobs:
             job.updated_at = func.now()
             return RagImport(
                 job.id, job.source_id, job.title, job.source_url, job.format, job.version, resumed, job.file_id,
-                confluence_space_id=job.confluence_space_id,
+                source_kind=job.source_kind, source_locator=job.source_locator, source_revision=job.source_revision,
             )
 
-    async def active_confluence_version(self, source_id: str, index_key: str) -> int | None:
+    async def active_source_revision(self, source_id: str, index_key: str) -> str | None:
         async with self.session() as session:
             return await session.scalar(
-                select(RagJob.confluence_version)
+                select(RagJob.source_revision)
                 .join(RagDocument, (RagDocument.source_id == RagJob.source_id)
                       & (RagDocument.index_key == RagJob.index_key) & (RagDocument.active_version == RagJob.version))
                 .where(RagJob.source_id == source_id, RagJob.index_key == index_key)
             )
 
-    async def skip_confluence(self, job: RagImport) -> None:
+    async def skip(self, job: RagImport) -> None:
         async with self.session(transaction=True) as session:
             await session.execute(self.finish(job).values(
                 status="skipped", title=job.title, source_url=job.source_url,
-                confluence_version=job.confluence_version, version=None,
+                source_revision=job.source_revision, version=None,
             ))
 
     async def publish(self, job: RagImport, index_key: str, count: int, size_bytes: int) -> bool:
@@ -271,7 +272,7 @@ class RagJobs:
             result = await session.execute(
                 self.finish(job).values(
                     status="succeeded", chunk_count=count, title=job.title, format=job.format, size_bytes=size_bytes,
-                    source_url=job.source_url, confluence_version=job.confluence_version,
+                    source_url=job.source_url, source_revision=job.source_revision,
                 ).returning(RagJob.id)
             )
             if result.scalar_one_or_none() is None:

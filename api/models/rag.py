@@ -40,8 +40,9 @@ class RagImport:
     version: str
     resumed: bool
     file_id: UUID | None = None
-    confluence_space_id: str | None = None
-    confluence_version: int | None = None
+    source_kind: str | None = None
+    source_locator: dict[str, str] | None = None
+    source_revision: str | None = None
 
 
 class InvalidDocument(ValueError):
