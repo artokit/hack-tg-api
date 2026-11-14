@@ -17,6 +17,7 @@ from services.auth import AuthService
 from services.employees import EmployeeService
 from services.health import HealthService
 from services.invites import InviteService
+from services.rag import RagOriginals, RagService
 from services.ticket_service import TicketService
 
 bearer_scheme = HTTPBearer(scheme_name="UserJWT", bearerFormat="JWT", auto_error=False)
@@ -97,6 +98,16 @@ def require_bot_token(
         )
     ):
         raise HTTPException(status_code=401, detail="Invalid or missing bot token")
+
+
+def get_rag_originals(request: Request) -> RagOriginals:
+    return request.app.state.rag_originals
+
+
+def get_rag_service(request: Request) -> RagService:
+    if request.app.state.rag_service is None:
+        raise HTTPException(status_code=503, detail="Embedding provider is not configured")
+    return request.app.state.rag_service
 
 
 def get_invite_service(

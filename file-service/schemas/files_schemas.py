@@ -5,5 +5,5 @@ from dataclasses import dataclass
 class FileResponse:
     id: str
     name: str
-    extension: str
+    extension: str | None
     url: str
