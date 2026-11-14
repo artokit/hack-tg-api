@@ -154,15 +154,11 @@ Flue берёт адрес и ключ для чата и Vision из `CHAT_BASE
   `exact_id`. Возвращает фрагменты для тулзы и требует `X-Bot-Token: <BOT_API_TOKEN>`.
 
 Ссылки на оригиналы из Telegram используют `RAG_FILES_PUBLIC_URL`, по умолчанию
-`https://api.cheremha.ru`. Направьте путь скачивания `/file-service/{file_id}` в FastAPI.
-
-```nginx
-location ~ "^/file-service/[0-9a-f-]{36}$" {
-    limit_except GET { deny all; }
-    access_log off;
-    proxy_pass http://127.0.0.1:8000;
-}
-```
+`https://api.cheremha.ru`. В HTTPS-блоке этого домена замените существующие маршруты
+`/file-service` конфигом `deploy/nginx/file-service.conf`. Он направляет подписанные
+ссылки с UUID в FastAPI, а остальные файловые маршруты в file-service. Если меняли
+`API_PORT` или `FILE_SERVICE_PORT`, подставьте соответствующие порты в `proxy_pass`.
+Проверьте и перечитайте конфигурацию командой `sudo nginx -t && sudo systemctl reload nginx`.
 
 ## Проверки разработки
 
