@@ -16,7 +16,6 @@ Flue принимает Telegram webhook, вызывает OpenAI-совмест
 FILE_SERVICE_PORT=8080
 FILE_DB_USER=file_service
 FILE_DB_PASSWORD=replace-with-a-long-random-database-password
-FILE_DB_NAME=files
 MINIO_ROOT_USER=file_storage_admin
 MINIO_ROOT_PASSWORD=replace-with-another-long-random-storage-password
 MINIO_API_PORT=9000
@@ -26,14 +25,16 @@ S3_BUCKET_NAME=files
 
 Замените оба пароля разными случайными значениями, желательно от 32 символов; MinIO требует минимум 8 символов. Остальные значения можно оставить как в примере. Для генерации пароля можно выполнить `python -c "import secrets; print(secrets.token_urlsafe(32))"`. В Docker Compose отдельный `file-service/.env` не нужен: `DB_*` и `S3_*` передаются сервису из корневых настроек автоматически.
 
-Запуск только файлового контура: `docker compose up -d --build --wait file-service`. PostgreSQL файлового сервиса и MinIO поднимутся как зависимости. File-service сначала применяет свои миграции через asyncpg, затем создаёт отсутствующий bucket и запускает HTTP-сервер.
+Запуск файлового сервиса: `docker compose up -d --build --wait file-service`. Используется уже существующий сервис `postgres` и отдельная база с именем `file-service`. Одноразовый контейнер `file-db-init` создаёт отсутствующего пользователя и БД; это клиент `psql`, а не второй сервер PostgreSQL. Подготовка работает и с уже инициализированным PostgreSQL. File-service сначала применяет свои миграции через asyncpg, затем создаёт отсутствующий bucket в MinIO и запускает HTTP-сервер.
 
 - File-service: `http://127.0.0.1:8080/file-service/docs`.
 - S3 API MinIO: `http://127.0.0.1:9000`.
 - Консоль MinIO: `http://127.0.0.1:9001`, вход по `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`.
 - Внутри Compose file-service доступен по `http://file-service:3000`, а MinIO — по `http://minio:9000`.
 
-Метаданные файлов хранятся в отдельном PostgreSQL и volume `file_postgres_data`, объекты — в `minio_data`. Миграции файлового сервиса не затрагивают БД основного API. Порты проброшены только на `127.0.0.1` и могут быть изменены переменными из примера.
+Метаданные файлов хранятся в базе `file-service` общего PostgreSQL, в существующем volume `postgres_flue_data`; объекты — в `minio_data`. Пользователь БД задаётся через `FILE_DB_USER`, пароль — через `FILE_DB_PASSWORD`. Имя базы фиксировано, переменная `FILE_DB_NAME` больше не используется. Миграции файлового сервиса выполняются только в его базе и не затрагивают БД основного API. Порты проброшены только на `127.0.0.1` и могут быть изменены переменными из примера.
+
+Если раньше запускался отдельный `file-postgres`, его старый volume не удаляется автоматически. Данные из него нужно отдельно перенести через `pg_dump` / `pg_restore` до переключения сервиса; пустая новая база не заменяет такой перенос. Изменение `FILE_DB_PASSWORD` в `.env` не меняет пароль уже существующего пользователя PostgreSQL.
 
 Bucket по умолчанию приватный. Текущий file-service возвращает в поле `url` внутренний S3-адрес, а не публичную или подписанную ссылку; для доступа к объектам нужны S3-учётные данные либо вход в консоль MinIO.
 
