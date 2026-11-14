@@ -89,7 +89,7 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
       if (path === '/internal/rag/answer') {
         ++ragRequests;
-        assert.equal(req.headers.authorization, 'Bearer test-rag-service-token');
+        assert.equal(req.headers['x-bot-token'], 'test-existing-bot-api-token');
         assert.equal(typeof body.question, 'string');
         if (body.question.includes('недоступность')) {
           res.writeHead(503).end();
@@ -186,8 +186,7 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
           CHAT_API_KEY: '',
           CHAT_MODEL: 'test',
           CHAT_CONTEXT_WINDOW: '8192',
-          RAG_ENABLED: 'true',
-          RAG_SERVICE_TOKEN: 'test-rag-service-token',
+          BOT_API_TOKEN: 'test-existing-bot-api-token',
         },
       });
       run.stdout?.on('data', (chunk) => { serverLogs += chunk; });
@@ -284,10 +283,6 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
     assert.equal(ragRequests, 2);
     await until(async () => !await pending(), 'RAG error delivery');
 
-    assert.equal((await send(11, 'Что говорит наш регламент?')).status, 200);
-    await until(async () => !await pending(), 'missing RAG tool delivery');
-    assert.equal(calls.filter((call) => call.text?.includes('Поиск по документации сейчас недоступен')).length, 2);
-    assert.equal(ragRequests, 2);
   } catch (error) {
     console.error(serverLogs, calls);
     throw error;

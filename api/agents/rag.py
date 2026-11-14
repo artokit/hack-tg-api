@@ -4,6 +4,7 @@ import logging
 import time
 from collections.abc import Sequence
 from typing import Literal
+from urllib.parse import urlsplit
 
 import openai
 from pydantic import BaseModel, Field, ValidationError
@@ -12,7 +13,6 @@ from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from config import RagSettings
 from models.rag import RagUnavailable
 
 
@@ -70,27 +70,24 @@ log = logging.getLogger(__name__)
 
 
 class Luna:
-    def __init__(self, settings: RagSettings):
+    def __init__(self, base_url: str, model: str, key: str | None):
         self.provider_options = (
             {"extra_body": {"provider": {"data_collection": "deny", "zdr": True}}}
-            if settings.rag_luna_base_url.host == "openrouter.ai" else {}
+            if urlsplit(base_url).hostname == "openrouter.ai" else {}
         )
         self.client = openai.AsyncOpenAI(
-            base_url=str(settings.rag_luna_base_url).rstrip("/") + "/",
-            api_key=(
-                settings.rag_luna_api_key.get_secret_value()
-                if settings.rag_luna_api_key else "keyless"
-            ),
+            base_url=base_url.rstrip("/") + "/",
+            api_key=key or "keyless",
             default_headers={
                 "OpenAI-Organization": openai.Omit(),
                 "OpenAI-Project": openai.Omit(),
-                **({} if settings.rag_luna_api_key else {"Authorization": openai.Omit()}),
+                **({} if key else {"Authorization": openai.Omit()}),
             },
             timeout=18,
             max_retries=0,
         )
         self.model = OpenAIChatModel(
-            settings.rag_luna_model, provider=OpenAIProvider(openai_client=self.client)
+            model, provider=OpenAIProvider(openai_client=self.client)
         )
         self.slots = asyncio.Semaphore(8)
 

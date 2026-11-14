@@ -3,17 +3,7 @@ import * as v from 'valibot';
 
 import { httpUrl, required } from './config.js';
 
-export const ragEnabled = /^(?:1|true|yes|on)$/i.test(process.env.RAG_ENABLED?.trim() ?? '');
-export const ragToolName = 'answer_from_docs';
-export const ragUnavailable = 'Поиск по документации сейчас недоступен. Попробуй ещё раз чуть позже.';
-
-const exactId = /(?<![\w.-])[A-Z]{1,10}-\d+(?:\.\d+)*-\d{2,6}(?![\w-]|\.\d)/i;
-const barsTerm = /(?:(?<![а-яё])БАРС(?![а-яё])|реестр[а-яё]*\s+(?:мебели|техники)|БП\s*[«"„]?Командировка|Служебная информация|производственн[а-яё]+\s+календар[а-яё]*|mainmenuitemclick|!>\s*\d)/iu;
-const internalDocs = /(?:(?:наш[а-яё]*|внутренн[а-яё]*|корпоративн[а-яё]*)\s+(?:баз[а-яё]*|регламент[а-яё]*|документац[а-яё]*|инструкц[а-яё]*|процедур[а-яё]*)|(?:оформить|согласовать|оплатить|отправить)\s+командировк[а-яё]*)/iu;
-
-export function requiresRag(question: string): boolean {
-  return exactId.test(question) || barsTerm.test(question) || internalDocs.test(question);
-}
+const ragUnavailable = 'Поиск по документации сейчас недоступен. Попробуй ещё раз чуть позже.';
 
 const source = v.object({
   id: v.string(),
@@ -43,7 +33,7 @@ type RagSource = v.InferOutput<typeof source>;
 
 export function answerTool(question: string, write: (data: RagDelivery) => void) {
   return defineTool({
-    name: ragToolName,
+    name: 'answer_from_docs',
     timeoutMs: 55_000,
     description: 'Ответь по базе документации БАРС на вопросы о внутренних правилах, интерфейсах, процессах и конкретных пунктах. Передай самостоятельный запрос, если пользователь уточняет предыдущий вопрос.',
     input: v.object({
@@ -58,7 +48,7 @@ export function answerTool(question: string, write: (data: RagDelivery) => void)
           signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${required('RAG_SERVICE_TOKEN')}`,
+            'X-Bot-Token': required('BOT_API_TOKEN'),
           },
           body: JSON.stringify({ question, standalone_question: data.standalone_question }),
         });

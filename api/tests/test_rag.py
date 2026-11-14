@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from httpx import AsyncClient
 from docx import Document
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -26,7 +27,7 @@ from services.rag_ingest import RagIngest
 
 CODES = ("MS-2.11-002", "MS-2.11-004")
 SERVICE_TOKEN = "test-only-rag-token-for-local-verification"
-HEADERS = {"Authorization": f"Bearer {SERVICE_TOKEN}"}
+HEADERS = {"X-Bot-Token": SERVICE_TOKEN}
 SOURCE = (
     "# Демографические группы\n"
     "| ID | Действие |\n| --- | --- |\n"
@@ -186,25 +187,33 @@ def wait_job(client, job_id):
     pytest.fail("Import job did not finish")
 
 
-def test_rag_routes_publish_only_verified_versions(monkeypatch):
+@pytest.fixture
+def rag_services(monkeypatch):
     database = os.environ.get("TEST_DATABASE_URL")
     qdrant = os.environ.get("TEST_RAG_QDRANT_URL")
     if not database or not qdrant:
         pytest.skip("Set TEST_DATABASE_URL and TEST_RAG_QDRANT_URL")
     for key, value in {
-        "DATABASE_URL": database, "RAG_ENABLED": "true", "RAG_SERVICE_TOKEN": SERVICE_TOKEN,
-        "RAG_QDRANT_URL": qdrant, "RAG_COLLECTION": "test_rag_" + uuid4().hex,
-        "RAG_EMBEDDING_BASE_URL": "http://127.0.0.1:2/v1",
-        "RAG_LUNA_BASE_URL": "http://127.0.0.1:2/v1",
+        "DATABASE_URL": database, "BOT_API_TOKEN": SERVICE_TOKEN,
+        "CHAT_BASE_URL": "http://127.0.0.1:2/v1", "CHAT_MODEL": "test",
     }.items():
         monkeypatch.setenv(key, value)
-    example = FixtureLuna()
-    monkeypatch.setattr("lifespan.Luna", lambda _: example)
+    collection = "test_rag_" + uuid4().hex
+
+    def make_index(http: AsyncClient, base_url: str, key: str | None) -> RagIndex:
+        return RagIndex(http, base_url, key, qdrant=qdrant, collection=collection)
+
+    monkeypatch.setattr("lifespan.RagIndex", make_index)
 
     async def vectors(self, inputs):
         return [[1.0] + [0.0] * 4095 for _ in inputs]
 
     monkeypatch.setattr(RagIndex, "vectors", vectors)
+
+
+def test_rag_routes_publish_only_verified_versions(monkeypatch, rag_services):
+    example = FixtureLuna()
+    monkeypatch.setattr("lifespan.Luna", lambda *_: example)
     with TestClient(app) as client:
         endpoint = "/internal/rag"
         metadata = {"source_id": "nist", "title": "NIST", "source_url": "https://example.com/nist"}
@@ -288,18 +297,7 @@ def make_scan() -> bytes:
     return buffer.getvalue()
 
 
-def test_job_can_resume_after_api_restart(monkeypatch):
-    database = os.environ.get("TEST_DATABASE_URL")
-    qdrant = os.environ.get("TEST_RAG_QDRANT_URL")
-    if not database or not qdrant:
-        pytest.skip("Set TEST_DATABASE_URL and TEST_RAG_QDRANT_URL")
-    for key, value in {
-        "DATABASE_URL": database, "RAG_ENABLED": "true", "RAG_SERVICE_TOKEN": SERVICE_TOKEN,
-        "RAG_QDRANT_URL": qdrant, "RAG_COLLECTION": "test_rag_" + uuid4().hex,
-        "RAG_EMBEDDING_BASE_URL": "http://127.0.0.1:2/v1",
-        "RAG_LUNA_BASE_URL": "http://127.0.0.1:2/v1",
-    }.items():
-        monkeypatch.setenv(key, value)
+def test_job_can_resume_after_api_restart(monkeypatch, rag_services):
     invoked = threading.Event()
     first_worker = True
 
@@ -310,11 +308,7 @@ def test_job_can_resume_after_api_restart(monkeypatch):
                 await asyncio.Event().wait()
             return await super().plan_chunks(blocks, correction)
 
-    async def vectors(self, inputs):
-        return [[1.0] + [0.0] * 4095 for _ in inputs]
-
-    monkeypatch.setattr("lifespan.Luna", lambda _: InterruptedPlanner())
-    monkeypatch.setattr(RagIndex, "vectors", vectors)
+    monkeypatch.setattr("lifespan.Luna", lambda *_: InterruptedPlanner())
     with TestClient(app) as client:
         response = client.post(
             "/internal/rag/documents", headers=HEADERS,

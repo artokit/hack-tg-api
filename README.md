@@ -71,13 +71,10 @@ Invoke-RestMethod "$telegramApi/getWebhookInfo"
 
 ## База документации
 
-Задайте `RAG_ENABLED=true`, отдельный `RAG_SERVICE_TOKEN` длиной от 32 символов и базовые URL
-совместимых API в `RAG_EMBEDDING_BASE_URL` и `RAG_LUNA_BASE_URL`. Указывайте URL
-без `/embeddings` или `/chat/completions`, например `https://provider.example/v1`.
-Первый сервис должен обслуживать Qwen3 Embedding 8B и возвращать 4096 чисел на вход.
-Второй должен обслуживать Luna с поддержкой изображений.
-Для локального Qdrant используйте `docker compose --profile rag up -d --build --wait`,
-для внешнего укажите `RAG_QDRANT_URL` и запустите Compose без профиля `rag`.
+Тулза `answer_from_docs` доступна агенту в обычном запуске Compose. API использует те же
+`CHAT_BASE_URL`, `CHAT_MODEL` и `CHAT_API_KEY`, что и Flue. На общем адресе модели должны
+быть доступны `/chat/completions` с поддержкой изображений и `/embeddings` с
+Qwen3 Embedding 8B. Qdrant запускается вместе с приложением.
 До добавления списка Telegram ID загружайте только материалы, разрешённые для демо.
 
 - `POST /internal/rag/documents` принимает multipart поля `file`, `source_id`, `title` и
@@ -91,7 +88,7 @@ Invoke-RestMethod "$telegramApi/getWebhookInfo"
   Для ссылки на конкретную версию документа передавайте постоянный URL этой версии.
 - `POST /internal/rag/answer` принимает JSON с `question` и необязательным `standalone_question`.
   Возвращает ответ по частям и источники. Все три ручки требуют
-  `Authorization: Bearer <RAG_SERVICE_TOKEN>`.
+  `X-Bot-Token: <BOT_API_TOKEN>`.
 
 ## Проверки разработки
 

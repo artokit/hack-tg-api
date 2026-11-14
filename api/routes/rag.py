@@ -2,7 +2,7 @@ from pathlib import PurePath
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import AnyHttpUrl
 
 from depends import get_rag_service
@@ -13,11 +13,11 @@ from services.rag import RagService
 
 router = APIRouter(prefix="/internal/rag", tags=["rag"])
 Service = Annotated[RagService, Depends(get_rag_service)]
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
 @router.post("/documents", response_model=RagJobCreated, status_code=202)
 async def upload_document(
-    request: Request,
     service: Service,
     file: UploadFile,
     source_id: Annotated[str, Form(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_./:\-]+$")],
@@ -25,7 +25,7 @@ async def upload_document(
     source_url: Annotated[AnyHttpUrl | None, Form()] = None,
 ):
     format = PurePath(file.filename or "").suffix.lower().removeprefix(".")
-    limit = request.app.state.rag_settings.rag_max_upload_bytes
+    limit = MAX_UPLOAD_BYTES
     try:
         if format not in {"pdf", "docx", "md"}:
             raise HTTPException(status_code=415, detail="Use a PDF, DOCX or Markdown file")

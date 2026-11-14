@@ -20,22 +20,6 @@ from services.ticket_service import TicketService
 
 bearer_scheme = HTTPBearer(scheme_name="UserJWT", bearerFormat="JWT", auto_error=False)
 bot_token_scheme = APIKeyHeader(name="X-Bot-Token", scheme_name="BotToken", auto_error=False)
-rag_bearer_scheme = HTTPBearer(scheme_name="RagServiceToken", auto_error=False)
-
-
-def get_rag_service(
-    request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(rag_bearer_scheme),
-) -> RagService:
-    if request.app.state.rag_service is None:
-        raise HTTPException(status_code=503, detail="RAG disabled")
-    token = request.app.state.rag_settings.rag_service_token.get_secret_value()
-    if credentials is None or not compare_digest(credentials.credentials.encode(), token.encode()):
-        raise HTTPException(
-            status_code=401, detail="Invalid RAG service token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return request.app.state.rag_service
 
 
 async def get_async_session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -107,6 +91,12 @@ def require_bot_token(
         )
     ):
         raise HTTPException(status_code=401, detail="Invalid or missing bot token")
+
+
+def get_rag_service(request: Request, _: None = Depends(require_bot_token)) -> RagService:
+    if request.app.state.rag_service is None:
+        raise HTTPException(status_code=503, detail="Chat provider is not configured")
+    return request.app.state.rag_service
 
 
 def get_invite_service(

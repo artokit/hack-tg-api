@@ -2,11 +2,11 @@ import asyncio
 import hashlib
 import json
 import math
+from urllib.parse import urlsplit
 from uuid import UUID, uuid5
 
 import httpx
 
-from config import RagSettings
 from models.rag import RagUnavailable
 
 
@@ -20,25 +20,21 @@ QUERY_INSTRUCTION = (
 
 
 class RagIndex:
-    def __init__(self, settings: RagSettings, http: httpx.AsyncClient):
+    def __init__(
+        self, http: httpx.AsyncClient, base_url: str, key: str | None,
+        *, qdrant: str = "http://qdrant:6333", collection: str = "bars_docs_qwen3_v1",
+    ):
         self.http = http
-        self.collection = settings.rag_collection
-        self.qdrant = str(settings.rag_qdrant_url).rstrip("/")
-        self.embedding = str(settings.rag_embedding_base_url).rstrip("/") + "/embeddings"
-        self.model = settings.rag_embedding_model
+        self.collection = collection
+        self.qdrant = qdrant.rstrip("/")
+        self.embedding = base_url.rstrip("/") + "/embeddings"
+        openrouter = urlsplit(base_url).hostname == "openrouter.ai"
+        self.model = "qwen/qwen3-embedding-8b" if openrouter else "Qwen/Qwen3-Embedding-8B"
         self.embedding_options = (
             {"provider": {"data_collection": "deny", "zdr": True}}
-            if settings.rag_embedding_base_url and settings.rag_embedding_base_url.host == "openrouter.ai"
-            else {}
+            if openrouter else {}
         )
-        self.qdrant_headers = (
-            {"api-key": settings.rag_qdrant_api_key.get_secret_value()}
-            if settings.rag_qdrant_api_key else {}
-        )
-        self.embedding_headers = (
-            {"Authorization": "Bearer " + settings.rag_embedding_api_key.get_secret_value()}
-            if settings.rag_embedding_api_key else {}
-        )
+        self.embedding_headers = {"Authorization": "Bearer " + key} if key else {}
         self.key = hashlib.sha256(json.dumps(
             [self.qdrant, self.collection, self.embedding, self.model, VECTOR_SIZE, QUERY_INSTRUCTION]
         ).encode()).hexdigest()
@@ -71,7 +67,7 @@ class RagIndex:
         try:
             response = await self.http.request(
                 method, f"{self.qdrant}/collections/{self.collection}{path}",
-                headers=self.qdrant_headers, json=body,
+                json=body,
             )
             if response.status_code == 404 and allow_missing:
                 return None
