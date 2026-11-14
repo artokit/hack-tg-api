@@ -18,6 +18,12 @@ class DatabaseSettings(BaseSettings):
     database_url: SecretStr
 
 
+class RedisSettings(BaseSettings):
+    model_config = DatabaseSettings.model_config
+
+    redis_url: SecretStr = SecretStr("redis://127.0.0.1:6379/0")
+
+
 class JiraSettings(BaseSettings):
     model_config = DatabaseSettings.model_config
 
