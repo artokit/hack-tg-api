@@ -4,6 +4,8 @@ from pathlib import Path
 from tempfile import gettempdir
 from uuid import UUID
 
+from models.rag import InvalidDocument, RagImport
+
 
 log = logging.getLogger(__name__)
 
@@ -25,8 +27,11 @@ class RagUploads:
             self.discard(job_id)
             raise
 
-    def read(self, job_id: UUID) -> bytes:
-        return (self.directory / str(job_id)).read_bytes()
+    async def load(self, job: RagImport) -> bytes:
+        try:
+            return await asyncio.to_thread((self.directory / str(job.id)).read_bytes)
+        except FileNotFoundError as error:
+            raise InvalidDocument("upload_missing") from error
 
     def discard(self, job_id: UUID) -> None:
         try:

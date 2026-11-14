@@ -34,11 +34,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             http = await stack.enter_async_context(httpx.AsyncClient(timeout=20))
             token = app.state.invite_settings.bot_api_token
             model = RagModel(http, token.get_secret_value() if token else None)
-            jobs = RagJobs(app.state.sessions)
+            jobs = RagJobs(app.state.sessions, engine)
             index = RagIndex(http, base_url, key)
             uploads = RagUploads(index.key)
             app.state.rag_service = RagService(jobs, index, uploads)
-            worker = asyncio.create_task(RagIngest(jobs, index, model, uploads).worker(engine), name="rag-import")
+            importer = RagIngest(jobs, index, model, uploads.load, uploads.discard)
+            worker = asyncio.create_task(importer.worker(), name="rag-import")
             stack.push_async_callback(stop_worker, worker)
         yield
 

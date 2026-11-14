@@ -204,14 +204,7 @@ def pdf_table_context(lines, box) -> str:
     return " ".join(preceding)[-420:]
 
 
-def pdf_tables(page, lines):
-    tables = page.find_tables({
-        "vertical_strategy": "lines",
-        "horizontal_strategy": "lines",
-        "snap_tolerance": 3,
-        "join_tolerance": 3,
-        "intersection_tolerance": 3,
-    })
+def pdf_tables(page, lines, tables):
     for index, table in enumerate(sorted(tables, key=lambda item: item.bbox[1])):
         box = table.bbox
         rows = table.extract(x_tolerance=1, y_tolerance=2)
@@ -291,6 +284,35 @@ def within(line, box) -> bool:
     )
 
 
+def pdf_diagram_box(page, lines, table_boxes):
+    objects = []
+    connectors = False
+    for item in [*page.lines, *page.curves, *page.rects]:
+        box = item["x0"], item["top"], item["x1"], item["bottom"]
+        if any(
+            table[0] - 2 <= box[0] and table[1] - 2 <= box[1]
+            and box[2] <= table[2] + 2 and box[3] <= table[3] + 2
+            for table in table_boxes
+        ):
+            continue
+        width, height = box[2] - box[0], box[3] - box[1]
+        if max(width, height) < 7 or item.get("object_type") == "rect" and min(width, height) < 5:
+            continue
+        objects.append(box)
+        connectors |= item.get("object_type") in {"line", "curve"}
+    if not connectors or len(objects) < 3:
+        return None
+    box = (
+        max(page.bbox[0], min(item[0] for item in objects) - 6),
+        max(page.bbox[1], min(item[1] for item in objects) - 6),
+        min(page.bbox[2], max(item[2] for item in objects) + 6),
+        min(page.bbox[3], max(item[3] for item in objects) + 6),
+    )
+    if box[2] - box[0] >= 80 and box[3] - box[1] >= 35 and any(within(line, box) for line in lines):
+        return box
+    return None
+
+
 def pdf_text_blocks(lines, page_number: int):
     current = []
     current_id = ()
@@ -352,7 +374,11 @@ def extract_pdf(data: bytes) -> list[Block]:
                         "scan", page=page.page_number, box=page.bbox, image=pdf_png(page, page.bbox)
                     )]))
             else:
-                tables = list(pdf_tables(page, lines))
+                detected_tables = page.find_tables({
+                    "vertical_strategy": "lines", "horizontal_strategy": "lines",
+                    "snap_tolerance": 3, "join_tolerance": 3, "intersection_tolerance": 3,
+                })
+                tables = list(pdf_tables(page, lines, detected_tables))
                 page_items.extend((box[1], blocks) for box, blocks in tables)
                 page_items.extend(pdf_text_blocks(
                     [line for line in lines if not any(within(line, box) for box, _ in tables)],
@@ -368,6 +394,13 @@ def extract_pdf(data: bytes) -> list[Block]:
                             "visual", page=page.page_number, box=box, image=pdf_png(page, box),
                             label=pdf_table_context(lines, box),
                         )]))
+                table_boxes = [table.bbox for table in detected_tables]
+                diagram = pdf_diagram_box(page, lines, table_boxes)
+                if diagram:
+                    page_items.append((diagram[1], [Block(
+                        "visual", page=page.page_number, box=diagram, image=pdf_png(page, diagram),
+                        label=pdf_table_context(lines, diagram),
+                    )]))
             for _, blocks in sorted(page_items, key=lambda item: item[0]):
                 total_images += sum(len(block.image or b"") for block in blocks)
                 if total_images > MAX_IMAGES_BYTES or len(result) + len(blocks) > MAX_BLOCKS:

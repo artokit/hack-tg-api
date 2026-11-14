@@ -1,18 +1,15 @@
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from uuid import uuid4
+from datetime import timedelta
+from uuid import UUID, uuid4
 
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncEngine
-
-from db.models import RagJob
-from models.rag import Block, Chunk, InvalidDocument, RagUnavailable
+from models.rag import Block, Chunk, InvalidDocument, RagImport, RagQueueUnavailable, RagUnavailable
 from repositories.rag_extract import extract_blocks, table_blocks, text_blocks
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
 from repositories.rag_model import RagModel
-from repositories.rag_uploads import RagUploads
 
 
 log = logging.getLogger(__name__)
@@ -21,6 +18,7 @@ WINDOW_BLOCKS = 30
 TAIL_BLOCKS = 6
 MAX_GROUP_CHARS = 6000
 MAX_GROUP_BLOCKS = 10
+RETIRED_VERSION_GRACE = timedelta(minutes=2)
 
 
 def validate_plan(groups, window: list[Block], start: int, document_size: int) -> list[Chunk]:
@@ -50,36 +48,55 @@ def validate_plan(groups, window: list[Block], start: int, document_size: int) -
 
 
 class RagIngest:
-    def __init__(self, jobs: RagJobs, index: RagIndex, model: RagModel, uploads: RagUploads):
+    def __init__(
+        self, jobs: RagJobs, index: RagIndex, model: RagModel,
+        load: Callable[[RagImport], Awaitable[bytes]], discard_upload: Callable[[UUID], None],
+    ):
         self.jobs = jobs
         self.index = index
         self.model = model
-        self.uploads = uploads
+        self.load = load
+        self.discard_upload = discard_upload
 
-    async def worker(self, engine: AsyncEngine) -> None:
+    async def worker(self) -> None:
+        next_cleanup = 0.0
         while True:
             try:
-                async with self.jobs.worker_lock(engine, self.index.key) as locked:
+                async with self.jobs.worker_lock(self.index.key) as locked:
                     if locked:
-                        while claim := await self.jobs.claim(str(uuid4()), self.index.key):
-                            job, previous_attempt = claim
-                            if previous_attempt:
-                                await self.discard(previous_attempt)
+                        while True:
+                            now = asyncio.get_running_loop().time()
+                            if now >= next_cleanup:
+                                await self.purge_retired()
+                                next_cleanup = now + 30
+                            job = await self.jobs.claim(str(uuid4()), self.index.key)
+                            if job is None:
+                                break
                             await self.process(job)
-            except SQLAlchemyError as error:
+            except RagQueueUnavailable as error:
                 log.warning("RAG queue unavailable (%s)", type(error).__name__)
             await asyncio.sleep(1)
 
-    async def discard(self, version: str) -> None:
+    async def purge_retired(self) -> None:
+        for job_id, version in await self.jobs.retired(self.index.key, RETIRED_VERSION_GRACE):
+            if await self.discard(version):
+                await self.jobs.mark_purged(job_id)
+
+    async def discard(self, version: str) -> bool:
         try:
             await self.index.discard(version)
         except RagUnavailable:
             log.warning("RAG could not discard inactive version %s", version)
+            return False
+        return True
 
-    async def process(self, job: RagJob) -> None:
+    async def process(self, job: RagImport) -> None:
         try:
             async with asyncio.timeout(1800):
-                blocks = await asyncio.to_thread(self.extract, job)
+                if job.resumed:
+                    await self.index.discard(job.version)
+                data = await self.load(job)
+                blocks = await asyncio.to_thread(extract_blocks, data, job.format)
                 blocks = await self.enrich(blocks)
                 if not blocks:
                     raise InvalidDocument("empty_document")
@@ -100,14 +117,7 @@ class RagIngest:
                 log.info("RAG import %s published %d chunks", job.id, len(entries))
             else:
                 await self.discard(job.version)
-        self.uploads.discard(job.id)
-
-    def extract(self, job: RagJob) -> list[Block]:
-        try:
-            data = self.uploads.read(job.id)
-        except FileNotFoundError as error:
-            raise InvalidDocument("upload_missing") from error
-        return extract_blocks(data, job.format)
+        self.discard_upload(job.id)
 
     async def enrich(self, blocks: list[Block]) -> list[Block]:
         async def read(index: int, block: Block) -> list[Block]:
@@ -207,7 +217,7 @@ class RagIngest:
         return result
 
     @staticmethod
-    def entry(job: RagJob, blocks: list[Block], chunk: Chunk, order: int) -> dict:
+    def entry(job: RagImport, blocks: list[Block], chunk: Chunk, order: int) -> dict:
         indexed = [blocks[index - 1] for index in chunk.blocks]
         search = [job.title]
         evidence = []

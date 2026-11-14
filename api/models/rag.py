@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Literal
+from uuid import UUID
 
 
 BlockKind = Literal["text", "heading", "table_row", "visual", "scan"]
@@ -27,9 +28,24 @@ class Chunk:
     related: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class RagImport:
+    id: UUID
+    source_id: str
+    title: str
+    source_url: str | None
+    format: str
+    version: str
+    resumed: bool
+
+
 class InvalidDocument(ValueError):
     pass
 
 
 class RagUnavailable(RuntimeError):
+    pass
+
+
+class RagQueueUnavailable(RagUnavailable):
     pass

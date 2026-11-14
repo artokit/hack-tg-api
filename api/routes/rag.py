@@ -5,18 +5,20 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from pydantic import AnyHttpUrl
 
-from depends import get_rag_service
+from depends import get_current_user, get_rag_service, require_bot_token
 from models.rag import RagUnavailable
-from schemas.rag import RagJobCreated, RagJobRead, RagSearchRequest
+from schemas.rag import RagEvidenceRead, RagJobCreated, RagJobRead, RagSearchRequest
 from services.rag import RagService, UnexpectedDocumentId
 
 
-router = APIRouter(prefix="/internal/rag", tags=["rag"])
+router = APIRouter(tags=["rag"])
 Service = Annotated[RagService, Depends(get_rag_service)]
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
-@router.post("/documents", response_model=RagJobCreated, status_code=202)
+@router.post(
+    "/rag/documents", response_model=RagJobCreated, status_code=202, dependencies=[Depends(get_current_user)],
+)
 async def upload_document(
     service: Service,
     file: UploadFile,
@@ -47,15 +49,20 @@ async def upload_document(
     return RagJobCreated(job_id=job_id)
 
 
-@router.get("/jobs/{job_id}", response_model=RagJobRead)
+@router.get("/rag/jobs/{job_id}", response_model=RagJobRead, dependencies=[Depends(get_current_user)])
 async def read_job(job_id: UUID, service: Service):
-    job = await service.read_job(job_id)
+    try:
+        job = await service.read_job(job_id)
+    except RagUnavailable as error:
+        raise HTTPException(status_code=503, detail="Import status temporarily unavailable") from error
     if job is None:
         raise HTTPException(status_code=404, detail="Import job not found")
     return job
 
 
-@router.post("/search")
+@router.post(
+    "/internal/rag/search", response_model=list[RagEvidenceRead], dependencies=[Depends(require_bot_token)],
+)
 async def search(query: RagSearchRequest, service: Service):
     try:
         return await service.search(query.question, query.exact_id, query.original_question)

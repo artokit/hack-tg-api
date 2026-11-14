@@ -93,7 +93,7 @@ def require_bot_token(
         raise HTTPException(status_code=401, detail="Invalid or missing bot token")
 
 
-def get_rag_service(request: Request, _: None = Depends(require_bot_token)) -> RagService:
+def get_rag_service(request: Request) -> RagService:
     if request.app.state.rag_service is None:
         raise HTTPException(status_code=503, detail="Chat provider is not configured")
     return request.app.state.rag_service

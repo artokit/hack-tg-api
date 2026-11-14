@@ -27,6 +27,7 @@ def upgrade() -> None:
         sa.Column("error_code", sa.String(32)),
         sa.Column("version", sa.String(36)),
         sa.Column("chunk_count", sa.Integer()),
+        sa.Column("purged_at", sa.DateTime(timezone=True)),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
     )

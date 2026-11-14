@@ -5,7 +5,7 @@ import { type Api, type SessionFlavor, Composer, Context } from 'grammy';
 import { Bars } from './agents/bars.js';
 import { responseSubmission } from './db.js';
 import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employees-api.js';
-import { renderRag } from './rag.js';
+import { renderRag } from './telegram-rag.js';
 import { TelegramOutput } from './telegram-output.js';
 import { type PendingUpdate, TelegramStore } from './telegram-store.js';
 

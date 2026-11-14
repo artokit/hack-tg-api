@@ -1,10 +1,10 @@
 import { timingSafeEqual } from 'node:crypto';
-import { init } from '@flue/runtime';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import * as v from 'valibot';
 
 import { DocumentImport, importOperations } from './agents/documents.js';
+import { withTransientHarness } from './transient-harness.js';
 
 const request = v.object({
   operation: v.picklist(importOperations),
@@ -58,20 +58,14 @@ ragModel.post('/model', async (c, next) => {
     return c.json({ detail: 'Image required only for visual reading' }, 400);
   }
   let text: string;
-  const agent = init(DocumentImport);
   const signal = AbortSignal.any([c.req.raw.signal, AbortSignal.timeout(20_000)]);
   try {
-    const receipt = await agent.dispatch({
-      initialData: { operation },
-      message: {
-        kind: 'user',
-        body: JSON.stringify(data),
-        ...(image ? { attachments: [{ type: 'image', data: image, mimeType: 'image/png' }] } : {}),
-      },
-    });
-    text = (await agent.read(receipt, { signal })).text.trim();
+    const reply = await withTransientHarness(DocumentImport, { operation }, async (harness) => harness.prompt(
+      JSON.stringify(data),
+      { signal, ...(image ? { images: [{ type: 'image', data: image, mimeType: 'image/png' }] } : {}) },
+    ));
+    text = reply.text.trim();
   } catch {
-    if (signal.aborted) void agent.abort().catch(() => {});
     console.warn('Flue RAG model call failed', operation);
     return c.json({ detail: 'Model unavailable' }, 503);
   }

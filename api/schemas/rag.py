@@ -4,6 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from models.rag import BlockKind
+
 
 class RagJobCreated(BaseModel):
     job_id: UUID
@@ -26,3 +28,17 @@ class RagSearchRequest(BaseModel):
     question: str = Field(min_length=1, max_length=1200)
     original_question: str = Field(min_length=1, max_length=4096)
     exact_id: str | None = Field(default=None, max_length=40)
+
+
+class RagEvidenceRead(BaseModel):
+    id: str
+    title: str
+    source_url: str | None
+    format: str
+    page: int | None
+    section: list[str]
+    identifiers: list[str]
+    kind: BlockKind
+    text: str
+    label: str = ""
+    columns: list[str] = Field(default_factory=list)

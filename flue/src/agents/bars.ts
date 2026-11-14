@@ -3,8 +3,14 @@ import { useDataWriter, useDelivery, useModel, useResponseStart, useTool } from 
 
 import { contextWindow, modelId } from '../provider.js';
 import { answerTool } from '../rag.js';
+import { transientSignal } from '../transient-harness.js';
 
 export function Bars() {
+  const delivery = useDelivery();
+  if (delivery.kind === 'signal' && delivery.type === transientSignal) {
+    useModel(`bars-chat/${modelId}`, { compaction: false });
+    return 'Ты формулируешь ответы по переданным фрагментам документации БАРС.';
+  }
   useModel(`bars-chat/${modelId}`, {
     compaction: {
       reserveTokens: Math.ceil(contextWindow * 0.2),
@@ -13,9 +19,8 @@ export function Bars() {
   });
   useResponseStart(() => ({ telegramResponseId: randomUUID() }));
   const writeRag = useDataWriter('ragAnswer');
-  const delivery = useDelivery();
   if (delivery.kind === 'user') {
-    useTool(answerTool(delivery.body, writeRag));
+    useTool(answerTool(Bars, delivery.body, writeRag));
   }
 
   return `Ты помощник БАРС Груп. Отвечай кратко и на языке пользователя.

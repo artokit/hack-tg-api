@@ -1,21 +1,33 @@
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from uuid import UUID
 
 from sqlalchemy import case, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from db.models import RagDocument, RagJob
+from models.rag import RagImport, RagQueueUnavailable
 
 
 class RagJobs:
-    def __init__(self, sessions: async_sessionmaker[AsyncSession]):
+    def __init__(self, sessions: async_sessionmaker[AsyncSession], engine: AsyncEngine):
         self.sessions = sessions
+        self.engine = engine
+
+    @asynccontextmanager
+    async def session(self, *, transaction: bool = False):
+        try:
+            async with (self.sessions.begin() if transaction else self.sessions()) as session:
+                yield session
+        except SQLAlchemyError as error:
+            raise RagQueueUnavailable("import_queue_unavailable") from error
 
     async def enqueue(
         self, job_id: UUID, index_key: str, source_id: str, title: str, source_url: str | None, format: str
     ) -> None:
-        async with self.sessions.begin() as session:
+        async with self.session(transaction=True) as session:
             session.add(RagJob(
                 id=job_id,
                 index_key=index_key, source_id=source_id, title=title, source_url=source_url,
@@ -23,7 +35,7 @@ class RagJobs:
             ))
 
     async def read(self, job_id: UUID, index_key: str):
-        async with self.sessions() as session:
+        async with self.session() as session:
             result = await session.execute(
                 select(
                     RagJob.id, RagJob.source_id, RagJob.status, RagJob.error_code,
@@ -33,9 +45,17 @@ class RagJobs:
             return result.mappings().one_or_none()
 
     @asynccontextmanager
-    async def worker_lock(self, engine: AsyncEngine, index_key: str):
+    async def worker_lock(self, index_key: str):
+        try:
+            async with self.advisory_lock(index_key) as acquired:
+                yield acquired
+        except SQLAlchemyError as error:
+            raise RagQueueUnavailable("import_queue_unavailable") from error
+
+    @asynccontextmanager
+    async def advisory_lock(self, index_key: str):
         lock_key = int.from_bytes(bytes.fromhex(index_key[:16]), "big", signed=True)
-        async with engine.connect() as connection:
+        async with self.engine.connect() as connection:
             try:
                 acquired = await connection.scalar(
                     text("SELECT pg_try_advisory_lock(:key)"), {"key": lock_key}
@@ -57,8 +77,8 @@ class RagJobs:
                         await connection.invalidate()
                         raise
 
-    async def claim(self, version: str, index_key: str) -> tuple[RagJob, str | None] | None:
-        async with self.sessions.begin() as session:
+    async def claim(self, version: str, index_key: str) -> RagImport | None:
+        async with self.session(transaction=True) as session:
             job = await session.scalar(
                 select(RagJob)
                 .where(RagJob.index_key == index_key, RagJob.status.in_(("queued", "running")))
@@ -68,19 +88,29 @@ class RagJobs:
             )
             if job is None:
                 return None
-            previous_attempt = job.version
+            resumed = job.status == "running"
             job.status = "running"
-            job.version = version
+            job.version = job.version or version
             job.updated_at = func.now()
-            return job, previous_attempt
+            return RagImport(job.id, job.source_id, job.title, job.source_url, job.format, job.version, resumed)
 
-    async def publish(self, job: RagJob, index_key: str, count: int) -> bool:
-        async with self.sessions.begin() as session:
+    async def publish(self, job: RagImport, index_key: str, count: int) -> bool:
+        async with self.session(transaction=True) as session:
             result = await session.execute(
                 self.finish(job).values(status="succeeded", chunk_count=count).returning(RagJob.id)
             )
             if result.scalar_one_or_none() is None:
                 return False
+            previous = await session.scalar(
+                select(RagDocument.active_version).where(
+                    RagDocument.source_id == job.source_id, RagDocument.index_key == index_key,
+                )
+            )
+            if previous:
+                await session.execute(
+                    update(RagJob).where(RagJob.index_key == index_key, RagJob.version == previous)
+                    .values(updated_at=func.now())
+                )
             await session.execute(
                 insert(RagDocument)
                 .values(source_id=job.source_id, active_version=job.version, index_key=index_key)
@@ -91,11 +121,30 @@ class RagJobs:
             )
             return True
 
-    async def fail(self, job: RagJob, error_code: str) -> None:
-        async with self.sessions.begin() as session:
+    async def retired(self, index_key: str, grace: timedelta) -> list[tuple[UUID, str]]:
+        active = select(RagDocument.active_version).where(RagDocument.index_key == index_key)
+        async with self.session() as session:
+            rows = await session.execute(
+                select(RagJob.id, RagJob.version).where(
+                    RagJob.index_key == index_key,
+                    RagJob.status.in_(("succeeded", "failed")),
+                    RagJob.purged_at.is_(None),
+                    RagJob.version.is_not(None),
+                    RagJob.version.not_in(active),
+                    RagJob.updated_at < func.now() - grace,
+                ).order_by(RagJob.updated_at).limit(20)
+            )
+            return [(job_id, version) for job_id, version in rows if version]
+
+    async def mark_purged(self, job_id: UUID) -> None:
+        async with self.session(transaction=True) as session:
+            await session.execute(update(RagJob).where(RagJob.id == job_id).values(purged_at=func.now()))
+
+    async def fail(self, job: RagImport, error_code: str) -> None:
+        async with self.session(transaction=True) as session:
             await session.execute(self.finish(job).values(status="failed", error_code=error_code))
 
-    def finish(self, job: RagJob):
+    def finish(self, job: RagImport):
         return (
             update(RagJob)
             .where(RagJob.id == job.id, RagJob.version == job.version, RagJob.status == "running")
@@ -103,7 +152,7 @@ class RagJobs:
         )
 
     async def active_versions(self, index_key: str) -> list[str]:
-        async with self.sessions() as session:
+        async with self.session() as session:
             return list(await session.scalars(
                 select(RagDocument.active_version).where(RagDocument.index_key == index_key)
             ))
