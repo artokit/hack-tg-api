@@ -8,7 +8,15 @@ from fastapi import FastAPI
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from config import AuthSettings, DatabaseSettings, EmbeddingSettings, FileSettings, InviteSettings, RedisSettings
+from config import (
+    AuthSettings,
+    ConfluenceSettings,
+    DatabaseSettings,
+    EmbeddingSettings,
+    FileSettings,
+    InviteSettings,
+    RedisSettings,
+)
 from db.db import create_engine
 from models.rag import RagImport
 from repositories.rag_files import RagFiles
@@ -32,6 +40,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = DatabaseSettings()
     app.state.auth_settings = AuthSettings()
     app.state.invite_settings = InviteSettings()
+    confluence_settings = ConfluenceSettings()
+    app.state.confluence_settings = confluence_settings
     embeddings = EmbeddingSettings()
     redis_settings = RedisSettings()
     async with AsyncExitStack() as stack:
@@ -50,6 +60,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         stack.push_async_callback(redis.aclose)
         app.state.redis = redis
+        app.state.confluence_client = await stack.enter_async_context(
+            httpx.AsyncClient(
+                base_url=confluence_settings.confluence_base_url.rstrip("/") + "/",
+                auth=(
+                    confluence_settings.confluence_email,
+                    confluence_settings.confluence_api_token.get_secret_value(),
+                ),
+                headers={"Accept": "application/json"},
+                timeout=30,
+            )
+        )
         app.state.rag_service = None
         file_settings = FileSettings()
         http = await stack.enter_async_context(httpx.AsyncClient(timeout=20))
