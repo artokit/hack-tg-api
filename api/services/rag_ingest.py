@@ -171,13 +171,13 @@ class RagIngest:
                     data = page.content_html.encode("utf-8")
                     if len(data) > MAX_DOCUMENT_BYTES:
                         raise DocumentTooLarge("document_too_large")
-                elif job.source_kind is not None:
-                    raise InvalidDocument("unsupported_source_kind")
-                elif job.format == "url" and job.source_url:
+                elif job.source_kind == "url" and job.source_url:
                     data, format, default_title = await load_url(job.source_url)
                     job = replace(job, title=job.title or default_title[:250], format=format)
-                else:
+                elif job.source_kind == "file":
                     data = await self.load(job)
+                else:
+                    raise InvalidDocument("unsupported_source_kind")
                 blocks = await asyncio.to_thread(extract_blocks, data, job.format)
                 blocks = await self.enrich(blocks)
                 if not blocks:

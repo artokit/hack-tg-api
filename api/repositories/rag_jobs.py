@@ -27,7 +27,7 @@ class RagJobs:
     async def enqueue(
         self, job_id: UUID, index_key: str, source_id: str, title: str | None,
         source_url: str | None, format: str, file_id: UUID | None = None, size_bytes: int | None = None,
-        *, source_kind: str | None = None, source_locator: dict[str, str] | None = None,
+        *, source_kind: str, source_locator: dict[str, str] | None = None,
     ) -> None:
         async with self.session(transaction=True) as session:
             await self.lock_source(session, index_key, source_id)
@@ -45,11 +45,11 @@ class RagJobs:
             {"source": f"rag-source:{index_key}:{source_id}"},
         )
 
-    async def source_for(self, job_id: UUID, index_key: str) -> str | None:
+    async def replaceable_source(self, job_id: UUID, index_key: str) -> str | None:
         async with self.session() as session:
             return await session.scalar(select(RagJob.source_id).where(
                 RagJob.id == job_id, RagJob.index_key == index_key, RagJob.status != "deleting",
-                RagJob.source_kind.is_(None),
+                RagJob.source_kind.in_(("file", "url")),
             ))
 
     @staticmethod
@@ -73,12 +73,15 @@ class RagJobs:
             if job.status == "deleting":
                 self.record_cleanup(job, None, file_id)
                 return False
-            self.record_cleanup(job, job.version, job.file_id, legacy=not job.file_id and not job.source_url)
+            self.record_cleanup(job, job.version, job.file_id, legacy=job.source_kind == "file" and not job.file_id)
             job.title = title
             job.format = format
             job.file_id = file_id
             job.size_bytes = size_bytes
             job.source_url = None
+            job.source_kind = "file"
+            job.source_locator = None
+            job.source_revision = None
             job.status = "queued"
             job.error_code = None
             job.version = None
@@ -111,7 +114,7 @@ class RagJobs:
                     continue
                 self.record_cleanup(
                     job, job.version, job.file_id,
-                    legacy=not job.file_id and not job.source_url and job.source_kind is None,
+                    legacy=job.source_kind == "file" and not job.file_id,
                 )
                 if job.cleanup:
                     job.status = "deleting"
@@ -246,8 +249,8 @@ class RagJobs:
             job.version = job.version or version
             job.updated_at = func.now()
             return RagImport(
-                job.id, job.source_id, job.title, job.source_url, job.format, job.version, resumed, job.file_id,
-                source_kind=job.source_kind, source_locator=job.source_locator, source_revision=job.source_revision,
+                job.id, job.source_id, job.title, job.source_url, job.format, job.version, resumed, job.source_kind,
+                file_id=job.file_id, source_locator=job.source_locator, source_revision=job.source_revision,
             )
 
     async def active_source_revision(self, source_id: str, index_key: str) -> str | None:

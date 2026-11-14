@@ -57,7 +57,9 @@ class RagService:
         file_id = await self.files.upload(name, data)
         title = title or name[:250]
         if replaces is None:
-            await self.jobs.enqueue(job_id, self.index.key, source_id, title, None, format, file_id, len(data))
+            await self.jobs.enqueue(
+                job_id, self.index.key, source_id, title, None, format, file_id, len(data), source_kind="file",
+            )
         else:
             replaced = await self.jobs.replace(job_id, self.index.key, source_id, title, format, file_id, len(data))
             if replaced is None:
@@ -67,7 +69,7 @@ class RagService:
         return job_id, source_id, file_id
 
     async def replace_file(self, job_id: UUID, title: str | None, filename: str, data: bytes) -> tuple[UUID, str, UUID]:
-        source_id = await self.jobs.source_for(job_id, self.index.key)
+        source_id = await self.jobs.replaceable_source(job_id, self.index.key)
         if source_id is None:
             raise RagDocumentNotFound
         return await self.submit_file(source_id, title, filename, data, replaces=job_id)
@@ -81,7 +83,7 @@ class RagService:
             raise InvalidDocument("reserved_source_id")
         job_id = uuid4()
         source_id = source_id or str(uuid4())
-        await self.jobs.enqueue(job_id, self.index.key, source_id, title, url, "url")
+        await self.jobs.enqueue(job_id, self.index.key, source_id, title, url, "url", source_kind="url")
         return job_id, source_id
 
     async def submit_confluence(self, space_id: str, page_id: str) -> tuple[UUID, str]:

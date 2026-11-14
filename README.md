@@ -156,6 +156,11 @@ Invoke-RestMethod "$telegramApi/getWebhookInfo"
 
 ## База документации
 
+Очередь RAG различает источники `file`, `url` и `confluence`. Для файла оригинал
+определяется по `file_id` в file-service, для прямой ссылки используется `source_url`.
+Confluence хранит идентификаторы пространства и страницы в `source_locator`,
+а номер публикации в `source_revision`.
+
 В Telegram работает один бот через агент `Bars` и тулзу `answer_from_docs`.
 Внутренний агент Flue `DocumentImport` читает изображения и делит текст при загрузке документа.
 Вход импорта и найденные для ответа фрагменты обрабатываются в памяти. История Telegram

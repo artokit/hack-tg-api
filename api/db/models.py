@@ -95,7 +95,7 @@ class RagJob(Base):
     index_key: Mapped[str] = mapped_column(String(64))
     title: Mapped[str] = mapped_column(String(250))
     source_url: Mapped[str | None] = mapped_column(Text)
-    source_kind: Mapped[str | None] = mapped_column(String(32))
+    source_kind: Mapped[str] = mapped_column(String(32))
     source_locator: Mapped[dict[str, str] | None] = mapped_column(JSONB(none_as_null=True))
     source_revision: Mapped[str | None] = mapped_column(Text)
     file_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)

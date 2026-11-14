@@ -39,8 +39,8 @@ class RagImport:
     format: str
     version: str
     resumed: bool
+    source_kind: str
     file_id: UUID | None = None
-    source_kind: str | None = None
     source_locator: dict[str, str] | None = None
     source_revision: str | None = None
 
