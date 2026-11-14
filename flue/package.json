@@ -20,7 +20,8 @@
     "@kalutskii/grammy-fsm": "1.0.5",
     "grammy": "1.46.0",
     "hono": "^4.12.32",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "valibot": "1.5.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.0",

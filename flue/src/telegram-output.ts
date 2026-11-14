@@ -68,13 +68,13 @@ export class TelegramOutput {
     }
   }
 
-  async send(id: string, chatId: string, text: string, markdown: boolean): Promise<void> {
+  async send(id: string, chatId: string, text: string, markdown: boolean, html?: string): Promise<void> {
     if (!await this.store.claimDelivery(id)) return;
     let status: 'sent' | 'failed' | 'unknown';
     try {
-      if (markdown) {
+      if (html || markdown) {
         try {
-          await withRateLimit(() => this.client.sendRichMessage(chatId, { markdown: text }));
+          await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }));
           await this.store.recordDelivery(id, 'sent');
           return;
         } catch (error) {
