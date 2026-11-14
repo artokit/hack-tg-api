@@ -6,9 +6,9 @@ import type { Pool } from 'pg';
 export interface IncomingMessage {
   text: string;
   userId: number;
-  firstName: string;
-  lastName?: string;
-  username?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  username?: string | null;
 }
 
 export interface PendingUpdate {

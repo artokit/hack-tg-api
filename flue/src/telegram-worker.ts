@@ -44,7 +44,7 @@ export class TelegramWorker {
         }
         const accepted = ctx.employee
           || await acceptInvite(inviteId, ctx.pending.payload)
-          || await isEmployee(ctx.pending.payload.userId);
+          || await isEmployee(ctx.pending.payload);
         await this.answer(ctx, accepted ? accessGranted : accessDenied);
         return;
       }
@@ -89,7 +89,7 @@ export class TelegramWorker {
   }
 
   private async admit(update: PendingUpdate): Promise<void> {
-    const employee = await isEmployee(update.payload.userId);
+    const employee = await isEmployee(update.payload);
     const answer = update.command_answer ?? (update.instance_id === null
       ? await this.handle(update, employee) : null);
     const response = answer ?? (!employee ? accessDenied : null);
@@ -176,8 +176,14 @@ export class TelegramWorker {
       message: {
         message_id: 0,
         date: 0,
-        chat: { type: 'private', id: Number(update.chat_id), first_name: firstName },
-        from: { id: userId, is_bot: false, first_name: firstName, last_name: lastName, username },
+        chat: { type: 'private', id: Number(update.chat_id), first_name: firstName ?? '' },
+        from: {
+          id: userId,
+          is_bot: false,
+          first_name: firstName ?? '',
+          last_name: lastName ?? undefined,
+          username: username ?? undefined,
+        },
         text: token ? token.toLowerCase() + text.slice(token.length) : text,
         entities: token ? [{ type: 'bot_command', offset: 0, length: token.length }] : undefined,
       },

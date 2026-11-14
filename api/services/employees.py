@@ -4,7 +4,7 @@ from pydantic import ValidationError
 
 from repositories.employee_cache import EmployeeCacheRepository
 from repositories.employees import EmployeeRepository
-from schemas.employees import EmployeeCreate, EmployeeRead
+from schemas.employees import EmployeeCreate, EmployeeRead, EmployeeTelegramUpdate
 
 
 class EmployeeService:
@@ -57,6 +57,20 @@ class EmployeeService:
         async with self._cache.lock(employee.telegram_id):
             await self._cache.delete(employee.telegram_id)
             await self._repository.delete(employee)
+
+    async def update_from_telegram(self, telegram_id: int, data: EmployeeTelegramUpdate):
+        async with self._cache.lock(telegram_id):
+            employee = await self._repository.get_by_telegram_id(telegram_id)
+            if employee is None:
+                raise LookupError("Employee not found")
+            await self._cache.delete(telegram_id)
+            if not employee.is_parsed:
+                employee = await self._repository.update_from_telegram(
+                    employee, data.username, data.first_name, data.last_name
+                )
+            cached = EmployeeRead.model_validate(employee)
+            await self._cache.set(telegram_id, cached.model_dump_json())
+            return employee
 
     async def get_all(self, page: int, page_size: int):
         items = await self._repository.get_all((page - 1) * page_size, page_size)

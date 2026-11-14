@@ -15,7 +15,14 @@ class EmployeeRead(EmployeeCreate):
 
     id: UUID
     username: str | None
+    is_parsed: bool
     created_at: datetime
+
+
+class EmployeeTelegramUpdate(BaseModel):
+    username: str | None = Field(max_length=255)
+    first_name: str | None = Field(max_length=255)
+    last_name: str | None = Field(max_length=255)
 
 
 class EmployeePage(BaseModel):
