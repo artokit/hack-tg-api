@@ -19,13 +19,13 @@ export async function isEmployee(telegramId: number): Promise<boolean> {
   return true;
 }
 
-export async function acceptInvite(id: string, message: IncomingMessage, name: string): Promise<boolean> {
+export async function acceptInvite(id: string, message: IncomingMessage): Promise<boolean> {
   const response = await botRequest(`invites/${id}/accept`, {
     method: 'POST',
     body: JSON.stringify({
       telegram_id: message.userId,
       username: message.username ?? null,
-      first_name: name,
+      first_name: null,
       last_name: null,
     }),
   });
