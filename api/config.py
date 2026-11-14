@@ -34,6 +34,14 @@ class JiraSettings(BaseSettings):
     jsm_request_type_id: str = "1"
 
 
+class ConfluenceSettings(BaseSettings):
+    model_config = DatabaseSettings.model_config
+
+    confluence_base_url: str = "https://barsdocs.atlassian.net/wiki"
+    confluence_email: str = ""
+    confluence_api_token: SecretStr = SecretStr("")
+
+
 _jira = JiraSettings()
 TICKET_ROUTES: dict[str, dict] = {
     "default": {
