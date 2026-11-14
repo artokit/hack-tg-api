@@ -1,10 +1,12 @@
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Literal
 from uuid import UUID
 
 
 BlockKind = Literal["text", "heading", "table_row", "visual", "scan"]
 Rectangle = tuple[float, float, float, float]
+RETIRED_VERSION_GRACE = timedelta(minutes=2)
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,10 @@ class InvalidDocument(ValueError):
 
 
 class DocumentTooLarge(InvalidDocument):
+    pass
+
+
+class RagDocumentNotFound(LookupError):
     pass
 
 

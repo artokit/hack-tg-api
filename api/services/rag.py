@@ -4,7 +4,7 @@ from pathlib import PurePath
 from urllib.parse import unquote, urlsplit
 from uuid import UUID, uuid4
 
-from models.rag import DocumentTooLarge, InvalidDocument, RagQueueUnavailable, RagUnavailable
+from models.rag import DocumentTooLarge, InvalidDocument, RagDocumentNotFound, RagQueueUnavailable, RagUnavailable
 from repositories.rag_extract import identifiers
 from repositories.rag_files import DOCUMENT_FORMATS, MAX_DOCUMENT_BYTES, RagFiles
 from repositories.rag_index import RagIndex
@@ -22,11 +22,12 @@ class UnexpectedDocumentId(ValueError):
 
 
 class RagOriginals:
-    def __init__(self, files: RagFiles):
+    def __init__(self, files: RagFiles, jobs: RagJobs):
         self.files = files
+        self.jobs = jobs
 
     async def open(self, file_id: UUID, signature: str, byte_range: str | None):
-        if self.files.permits(file_id, signature):
+        if self.files.permits(file_id, signature) and not await self.jobs.is_file_deleted(file_id):
             return await self.files.open(file_id, byte_range)
         return None
 
@@ -39,6 +40,7 @@ class RagService:
 
     async def submit_file(
         self, source_id: str | None, title: str | None, filename: str, data: bytes,
+        *, replaces: UUID | None = None,
     ) -> tuple[UUID, str, UUID]:
         name = PurePath(filename.replace("\\", "/")).name
         format = PurePath(name).suffix.lower().removeprefix(".")
@@ -48,13 +50,29 @@ class RagService:
             raise DocumentTooLarge("document_too_large")
         if not data:
             raise InvalidDocument("empty_document")
-        job_id = uuid4()
+        job_id = replaces or uuid4()
         source_id = source_id or str(uuid4())
         file_id = await self.files.upload(name, data)
-        await self.jobs.enqueue(
-            job_id, self.index.key, source_id, title or name[:250], None, format, file_id, len(data),
-        )
+        title = title or name[:250]
+        if replaces is None:
+            await self.jobs.enqueue(job_id, self.index.key, source_id, title, None, format, file_id, len(data))
+        else:
+            replaced = await self.jobs.replace(job_id, self.index.key, source_id, title, format, file_id, len(data))
+            if replaced is None:
+                await self.files.delete(file_id)
+            if not replaced:
+                raise RagDocumentNotFound
         return job_id, source_id, file_id
+
+    async def replace_file(self, job_id: UUID, title: str | None, filename: str, data: bytes) -> tuple[UUID, str, UUID]:
+        source_id = await self.jobs.source_for(job_id, self.index.key)
+        if source_id is None:
+            raise RagDocumentNotFound
+        return await self.submit_file(source_id, title, filename, data, replaces=job_id)
+
+    async def delete_document(self, job_id: UUID) -> None:
+        if not await self.jobs.delete_source(job_id, self.index.key):
+            raise RagDocumentNotFound
 
     async def submit_url(self, source_id: str | None, title: str | None, url: str) -> tuple[UUID, str]:
         job_id = uuid4()
@@ -71,10 +89,14 @@ class RagService:
         for row in rows:
             item = dict(row)
             url = item.pop("source_url")
+            address = urlsplit(url) if url else None
             if not item["title"]:
-                address = urlsplit(url) if url else None
                 name = unquote(address.path.rsplit("/", 1)[-1]).strip() if address else ""
                 item["title"] = (name or (address.hostname if address else None) or item["source_id"])[:250]
+            item["document_url"] = self.files.link(item["file_id"]) if item["file_id"] else (
+                url if address and address.scheme in ("https", "http") and address.hostname
+                and not address.username and not address.password else None
+            )
             items.append(item)
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 

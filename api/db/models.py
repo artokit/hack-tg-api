@@ -13,7 +13,9 @@ from sqlalchemy import (
     Uuid,
     false,
     func,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.db import Base
@@ -100,6 +102,7 @@ class RagJob(Base):
     error_code: Mapped[str | None] = mapped_column(String(32))
     version: Mapped[str | None] = mapped_column(String(36))
     chunk_count: Mapped[int | None] = mapped_column()
+    cleanup: Mapped[list[dict]] = mapped_column(JSONB, server_default=text("'[]'::jsonb"))
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

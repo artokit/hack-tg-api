@@ -1,7 +1,7 @@
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import insert, select
+from sqlalchemy import delete, insert, select
 from db.db import async_session_maker
 from models.file import File
 
@@ -25,3 +25,7 @@ class FileRepository:
         res = file.one_or_none()
 
         return res[0] if res else None
+
+    async def delete_file(self, file_id: UUID) -> None:
+        async with async_session_maker.begin() as session:
+            await session.execute(delete(File).where(File.id == file_id))

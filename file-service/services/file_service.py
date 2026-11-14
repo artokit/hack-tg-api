@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import boto3
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import UploadFile, HTTPException
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
@@ -63,6 +63,18 @@ class FileService:
             extension=file.extension,
             url=f"{config.S3_STORAGE_URL}/{config.S3_BUCKET_NAME}/{file_name_in_storage}"
         )
+
+    async def delete_file(self, file_id: UUID) -> None:
+        file = await self.repo.get_file_by_id(file_id)
+        if file is None:
+            return
+        try:
+            await run_in_threadpool(
+                self.s3.delete_object, Bucket=config.S3_BUCKET_NAME, Key=self.object_key(file_id, file.extension),
+            )
+        except (BotoCoreError, ClientError) as error:
+            raise HTTPException(status_code=503) from error
+        await self.repo.delete_file(file_id)
 
     async def get_content(self, file_id: UUID, byte_range: str | None) -> StreamingResponse:
         file = await self.repo.get_file_by_id(file_id)

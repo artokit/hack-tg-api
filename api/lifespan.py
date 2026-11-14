@@ -56,12 +56,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         token = app.state.invite_settings.bot_api_token
         secret = token.get_secret_value() if token else None
         files = RagFiles(http, str(file_settings.file_service_url), str(file_settings.rag_files_public_url), secret)
-        app.state.rag_originals = RagOriginals(files)
+        jobs = RagJobs(app.state.sessions, engine)
+        app.state.rag_originals = RagOriginals(files, jobs)
         if embeddings.embedding_base_url:
             base_url = str(embeddings.embedding_base_url)
             key = embeddings.embedding_api_key.get_secret_value() if embeddings.embedding_api_key else None
             model = RagModel(http, secret)
-            jobs = RagJobs(app.state.sessions, engine)
             index = RagIndex(http, base_url, key)
             uploads = RagUploads(index.key)
             app.state.rag_service = RagService(jobs, index, files)
@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             async def load_import(job: RagImport) -> bytes:
                 return await files.load(job.file_id) if job.file_id else await uploads.load(job)
 
-            importer = RagIngest(jobs, index, model, load_import, uploads.discard)
+            importer = RagIngest(jobs, index, model, load_import, uploads.discard, files.delete)
             worker = asyncio.create_task(importer.worker(), name="rag-import")
             stack.push_async_callback(stop_worker, worker)
         yield

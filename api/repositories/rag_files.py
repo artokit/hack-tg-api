@@ -40,6 +40,15 @@ class RagFiles:
     def link(self, file_id: UUID) -> str | None:
         return f"{self.public_url}/file-service/{file_id}?sig={self.signature(file_id)}" if self.token else None
 
+    async def delete(self, file_id: UUID) -> None:
+        if not self.token:
+            raise RagUnavailable("file_service_unconfigured")
+        try:
+            response = await self.http.delete(f"{self.base_url}/{file_id}", headers={"X-Bot-Token": self.token})
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise RagUnavailable("file_service_unavailable") from error
+
     async def open(self, file_id: UUID, byte_range: str | None = None) -> httpx.Response:
         if not self.token:
             raise RagUnavailable("file_service_unconfigured")

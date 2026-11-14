@@ -41,6 +41,7 @@ class RagJobListItem(RagJobRead):
     format: str
     size_bytes: int | None
     has_active_version: bool
+    document_url: str | None
 
 
 class RagJobPage(BaseModel):
