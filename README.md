@@ -69,7 +69,7 @@ location = /flue/channels/confluence/webhook {
 В Automation нужного пространства выберите [Page edited](https://support.atlassian.com/cloud-automation/docs/triggers-in-confluence-automation/#Page-edited)
 и [Send web request](https://support.atlassian.com/cloud-automation/docs/actions-in-confluence-automation/#Send-web-request).
 Метод `POST`, адрес `https://api.cheremha.ru/flue/channels/confluence/webhook`,
-заголовки `Content-Type: application/json` и скрытый `Authorization: Bearer <CONFLUENCE_WEBHOOK_SECRET>`.
+заголовки `Content-Type: application/json` и скрытый `X-Webhook-Secret: <CONFLUENCE_WEBHOOK_SECRET>`.
 В поле Custom data укажите JSON.
 
 ```json

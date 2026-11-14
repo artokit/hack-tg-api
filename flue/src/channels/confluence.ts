@@ -13,8 +13,8 @@ const webhook: Handler = async (c) => {
   const secret = process.env.CONFLUENCE_WEBHOOK_SECRET?.trim();
   if (!secret) return c.json({ detail: 'Confluence webhook unavailable' }, 503);
 
-  const expected = Buffer.from(`Bearer ${secret}`);
-  const provided = Buffer.from(c.req.header('Authorization') ?? '');
+  const expected = Buffer.from(secret);
+  const provided = Buffer.from(c.req.header('X-Webhook-Secret') ?? '');
   if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
     return c.json({ detail: 'Invalid webhook secret' }, 401);
   }
