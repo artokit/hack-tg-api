@@ -23,7 +23,6 @@ def upgrade() -> None:
         sa.Column("title", sa.String(250), nullable=False),
         sa.Column("source_url", sa.Text()),
         sa.Column("format", sa.String(4), nullable=False),
-        sa.Column("data", sa.LargeBinary()),
         sa.Column("status", sa.String(16), nullable=False),
         sa.Column("error_code", sa.String(32)),
         sa.Column("version", sa.String(36)),
