@@ -46,6 +46,7 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
   const botId = String(Date.now());
   const chatId = 10042;
   const secret = 'integration-secret';
+  const inviteId = 'c632f264-4774-4530-8483-fd389134f2d2';
   const calls: { method: string; text?: string }[] = [];
   const requests: { messages: { role: string; content: unknown }[] }[] = [];
   let authorization: string | undefined;
@@ -53,6 +54,7 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
   let blockModel = false;
   let run: ChildProcess | undefined;
   let serverLogs = '';
+  let inviteRequests = 0;
 
   const mock = createServer(async (req, res) => {
     try {
@@ -60,6 +62,16 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+      if (path === `/private/invites/${inviteId}/accept`) {
+        assert.equal(req.method, 'POST');
+        assert.equal(req.headers['x-bot-token'], 'integration-bot-token');
+        assert.deepEqual(body, {
+          telegram_id: chatId, username: 'tester', first_name: 'Tester', last_name: null,
+        });
+        inviteRequests++;
+        res.writeHead(201).end();
+        return;
+      }
       if (path.endsWith('/chat/completions')) {
         authorization = req.headers.authorization;
         requests.push(body);
@@ -110,6 +122,8 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
         env: {
           ...process.env,
           BOT_TOKEN: `${botId}:test`,
+          BOT_API_TOKEN: 'integration-bot-token',
+          API_URL: mockUrl,
           TELEGRAM_WEBHOOK_SECRET_TOKEN: secret,
           TELEGRAM_API_ROOT: mockUrl,
           FLUE_DATABASE_URL: connectionString,
@@ -161,6 +175,17 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
     assert.equal((await send(1, '/start')).status, 200);
     assert.equal((await send(1, '/start')).status, 200);
     await until(() => sent('sendMessage', 'Привет'), 'greeting');
+    assert.equal((await send(2, `/start@other_bot invite_${inviteId}`)).status, 200);
+    await until(async () => !await pending(), 'ignored command for another bot');
+    assert.equal(inviteRequests, 0);
+    assert.equal((await send(9, '/start invite_invalid')).status, 200);
+    await until(() => sent('sendMessage', 'Некорректная ссылка приглашения'), 'invalid invitation');
+    assert.equal((await send(10, `/START@Test_Bot invite_${inviteId}`)).status, 200);
+    assert.equal((await send(10, `/START@Test_Bot invite_${inviteId}`)).status, 200);
+    await until(() => sent('sendMessage', 'Приглашение принято'), 'accepted invitation');
+    assert.equal(inviteRequests, 1);
+    assert.equal((await send(11, '/unknown')).status, 200);
+    await until(async () => !await pending(), 'unknown command');
     assert.equal(requests.length, 0);
 
     blockModel = true;
