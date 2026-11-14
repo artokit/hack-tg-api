@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, Integer, LargeBinary, String, Text, Uuid, func
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, Index, Integer, String, Text, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.db import Base
@@ -81,7 +81,6 @@ class RagJob(Base):
     title: Mapped[str] = mapped_column(String(250))
     source_url: Mapped[str | None] = mapped_column(Text)
     format: Mapped[str] = mapped_column(String(4))
-    data: Mapped[bytes | None] = mapped_column(LargeBinary)
     status: Mapped[str] = mapped_column(String(16), default="queued")
     error_code: Mapped[str | None] = mapped_column(String(32))
     version: Mapped[str | None] = mapped_column(String(36))

@@ -11,6 +11,7 @@ from db.db import create_engine
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
 from repositories.rag_model import RagModel
+from repositories.rag_uploads import RagUploads
 from services.rag import RagService
 from services.rag_ingest import RagIngest
 
@@ -35,8 +36,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             model = RagModel(http, token.get_secret_value() if token else None)
             jobs = RagJobs(app.state.sessions)
             index = RagIndex(http, base_url, key)
-            app.state.rag_service = RagService(jobs, index)
-            worker = asyncio.create_task(RagIngest(jobs, index, model).worker(engine), name="rag-import")
+            uploads = RagUploads(index.key)
+            app.state.rag_service = RagService(jobs, index, uploads)
+            worker = asyncio.create_task(RagIngest(jobs, index, model, uploads).worker(engine), name="rag-import")
             stack.push_async_callback(stop_worker, worker)
         yield
 

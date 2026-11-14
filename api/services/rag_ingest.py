@@ -12,6 +12,7 @@ from repositories.rag_extract import extract_blocks, table_blocks, text_blocks
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
 from repositories.rag_model import RagModel
+from repositories.rag_uploads import RagUploads
 
 
 log = logging.getLogger(__name__)
@@ -49,10 +50,11 @@ def validate_plan(groups, window: list[Block], start: int, document_size: int) -
 
 
 class RagIngest:
-    def __init__(self, jobs: RagJobs, index: RagIndex, model: RagModel):
+    def __init__(self, jobs: RagJobs, index: RagIndex, model: RagModel, uploads: RagUploads):
         self.jobs = jobs
         self.index = index
         self.model = model
+        self.uploads = uploads
 
     async def worker(self, engine: AsyncEngine) -> None:
         while True:
@@ -77,7 +79,7 @@ class RagIngest:
     async def process(self, job: RagJob) -> None:
         try:
             async with asyncio.timeout(1800):
-                blocks = await asyncio.to_thread(extract_blocks, job.data, job.format)
+                blocks = await asyncio.to_thread(self.extract, job)
                 blocks = await self.enrich(blocks)
                 if not blocks:
                     raise InvalidDocument("empty_document")
@@ -98,6 +100,14 @@ class RagIngest:
                 log.info("RAG import %s published %d chunks", job.id, len(entries))
             else:
                 await self.discard(job.version)
+        self.uploads.discard(job.id)
+
+    def extract(self, job: RagJob) -> list[Block]:
+        try:
+            data = self.uploads.read(job.id)
+        except FileNotFoundError as error:
+            raise InvalidDocument("upload_missing") from error
+        return extract_blocks(data, job.format)
 
     async def enrich(self, blocks: list[Block]) -> list[Block]:
         async def read(index: int, block: Block) -> list[Block]:

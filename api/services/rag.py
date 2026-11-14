@@ -1,6 +1,6 @@
 import logging
 import re
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -8,6 +8,7 @@ from models.rag import RagUnavailable
 from repositories.rag_extract import identifiers
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
+from repositories.rag_uploads import RagUploads
 
 
 log = logging.getLogger(__name__)
@@ -21,14 +22,25 @@ class UnexpectedDocumentId(ValueError):
 
 
 class RagService:
-    def __init__(self, jobs: RagJobs, index: RagIndex):
+    def __init__(self, jobs: RagJobs, index: RagIndex, uploads: RagUploads):
         self.jobs = jobs
         self.index = index
+        self.uploads = uploads
 
     async def submit(
         self, source_id: str, title: str, source_url: str | None, format: str, data: bytes
     ) -> UUID:
-        return await self.jobs.enqueue(self.index.key, source_id, title, source_url, format, data)
+        job_id = uuid4()
+        try:
+            await self.uploads.save(job_id, data)
+        except OSError as error:
+            raise RagUnavailable("upload_storage_unavailable") from error
+        try:
+            await self.jobs.enqueue(job_id, self.index.key, source_id, title, source_url, format)
+        except SQLAlchemyError as error:
+            self.uploads.discard(job_id)
+            raise RagUnavailable("import_queue_unavailable") from error
+        return job_id
 
     async def read_job(self, job_id: UUID):
         return await self.jobs.read(job_id, self.index.key)

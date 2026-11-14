@@ -13,16 +13,14 @@ class RagJobs:
         self.sessions = sessions
 
     async def enqueue(
-        self, index_key: str, source_id: str, title: str, source_url: str | None, format: str, data: bytes
-    ) -> UUID:
+        self, job_id: UUID, index_key: str, source_id: str, title: str, source_url: str | None, format: str
+    ) -> None:
         async with self.sessions.begin() as session:
-            job = RagJob(
+            session.add(RagJob(
+                id=job_id,
                 index_key=index_key, source_id=source_id, title=title, source_url=source_url,
-                format=format, data=data,
-            )
-            session.add(job)
-            await session.flush()
-            return job.id
+                format=format,
+            ))
 
     async def read(self, job_id: UUID, index_key: str):
         async with self.sessions() as session:
@@ -101,7 +99,7 @@ class RagJobs:
         return (
             update(RagJob)
             .where(RagJob.id == job.id, RagJob.version == job.version, RagJob.status == "running")
-            .values(data=None, updated_at=func.now())
+            .values(updated_at=func.now())
         )
 
     async def active_versions(self, index_key: str) -> list[str]:

@@ -40,7 +40,10 @@ async def upload_document(
         raise HTTPException(status_code=413, detail="Document is too large")
     if not data:
         raise HTTPException(status_code=422, detail="Document is empty")
-    job_id = await service.submit(source_id, title.strip(), str(source_url) if source_url else None, format, data)
+    try:
+        job_id = await service.submit(source_id, title.strip(), str(source_url) if source_url else None, format, data)
+    except RagUnavailable as error:
+        raise HTTPException(status_code=503, detail="Document upload temporarily unavailable") from error
     return RagJobCreated(job_id=job_id)
 
 
