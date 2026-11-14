@@ -36,6 +36,20 @@ class RagJobRead(BaseModel):
     updated_at: datetime
 
 
+class RagJobListItem(RagJobRead):
+    title: str
+    format: str
+    size_bytes: int | None
+    has_active_version: bool
+
+
+class RagJobPage(BaseModel):
+    items: list[RagJobListItem]
+    total: int
+    page: int
+    page_size: int
+
+
 class RagSearchRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 

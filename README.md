@@ -140,6 +140,13 @@ Flue берёт адрес и ключ для чата и Vision из `CHAT_BASE
   размером до 25 МиБ.
   Из PDF и DOCX извлекаются встроенные изображения, из Markdown — встроенные изображения
   в формате data URI. Обычные ссылки на изображения остаются частью текста.
+- `GET /rag/jobs?page=1&page_size=20` возвращает `items`, `total`, `page` и `page_size`.
+  Для таблицы возвращается последняя попытка по каждому `source_id`, новые загрузки первыми.
+  `include_history=true` включает все попытки. В строке есть `id` задания, `title`, `format`,
+  `size_bytes`, `created_at`, `status`, `error_code` и `has_active_version`. Для ранее
+  загруженных файлов размер может быть `null`; у URL-импорта до успешной обработки `format`
+  может быть `url`. Если обновление завершилось ошибкой, `has_active_version` показывает,
+  доступна ли боту предыдущая версия.
 - `GET /rag/jobs/{job_id}` возвращает статус, ошибку или число опубликованных фрагментов.
   Для обновления передайте прежний `source_id`. После успешного импорта поиск переключается
   на новую версию. Старые фрагменты удаляются из Qdrant при очередной очистке через две минуты
@@ -152,17 +159,6 @@ Flue берёт адрес и ключ для чата и Vision из `CHAT_BASE
   сообщение откроет текущий файл по ссылке.
 - `POST /internal/rag/search` принимает `question`, `original_question` и необязательный
   `exact_id`. Возвращает фрагменты для тулзы и требует `X-Bot-Token: <BOT_API_TOKEN>`.
-
-Ссылки на оригиналы из Telegram используют `RAG_FILES_PUBLIC_URL`, по умолчанию
-`https://api.cheremha.ru`. Направьте путь скачивания `/file-service/{file_id}` в FastAPI.
-
-```nginx
-location ~ "^/file-service/[0-9a-f-]{36}$" {
-    limit_except GET { deny all; }
-    access_log off;
-    proxy_pass http://127.0.0.1:8000;
-}
-```
 
 ## Проверки разработки
 
