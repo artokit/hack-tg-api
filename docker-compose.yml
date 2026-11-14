@@ -42,7 +42,6 @@ services:
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
       BOT_API_TOKEN: ${BOT_API_TOKEN:-}
       CHAT_BASE_URL: ${CHAT_BASE_URL:-}
-      CHAT_MODEL: ${CHAT_MODEL:-}
       CHAT_API_KEY: ${CHAT_API_KEY:-}
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"

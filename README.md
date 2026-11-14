@@ -73,10 +73,10 @@ Invoke-RestMethod "$telegramApi/getWebhookInfo"
 
 ## База документации
 
-Тулза `answer_from_docs` доступна агенту в обычном запуске Compose. API использует те же
-`CHAT_BASE_URL`, `CHAT_MODEL` и `CHAT_API_KEY`, что и Flue. На общем адресе модели должны
-быть доступны `/chat/completions` с поддержкой изображений и `/embeddings` с
-Qwen3 Embedding 8B. Qdrant запускается вместе с приложением.
+Тулза `answer_from_docs` доступна агенту в обычном запуске Compose. Распознавание изображений,
+разбиение текста и проверку фактов выполняет настроенный во Flue чат-провайдер.
+FastAPI строит эмбеддинги Qwen3 Embedding 8B через `CHAT_BASE_URL` и хранит фрагменты в Qdrant.
+Провайдер должен поддерживать изображения в `/chat/completions` и Qwen в `/embeddings`.
 В Telegram тулза доступна зарегистрированным сотрудникам.
 
 - `POST /internal/rag/documents` принимает multipart поля `file`, `source_id`, `title` и

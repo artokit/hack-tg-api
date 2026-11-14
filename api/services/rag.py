@@ -6,12 +6,12 @@ from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from agents.rag import Luna, QueryPart
 from models.rag import RagUnavailable
 from repositories.rag_extract import identifiers
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
-from schemas.rag import RagAnswerRead, RagPartRead, RagSourceRead
+from repositories.rag_model import RagModel
+from schemas.rag import QueryPart, RagAnswerRead, RagPartRead, RagSourceRead
 
 
 log = logging.getLogger(__name__)
@@ -29,10 +29,10 @@ class AnswerPart:
 
 
 class RagService:
-    def __init__(self, jobs: RagJobs, index: RagIndex, luna: Luna):
+    def __init__(self, jobs: RagJobs, index: RagIndex, model: RagModel):
         self.jobs = jobs
         self.index = index
-        self.luna = luna
+        self.model = model
 
     async def submit(
         self, source_id: str, title: str, source_url: str | None, format: str, data: bytes
@@ -62,7 +62,7 @@ class RagService:
         versions = await self.jobs.active_versions(self.index.key)
         if not versions:
             return RagAnswerRead(status="not_found", parts=[], sources=[])
-        planned = await self.luna.plan_query(question, standalone, explicit)
+        planned = await self.model.plan_query(question, standalone, explicit)
         allowed_semantic_ids = set(contextual) - set(explicit)
         valid_plan = (
             {part.exact_id for part in planned.parts if part.exact_id} == set(explicit)
@@ -158,7 +158,7 @@ class RagService:
             }
         if not evidence:
             return default
-        proposal = await self.luna.propose(part.question, list(evidence.values()))
+        proposal = await self.model.propose(part.question, list(evidence.values()))
         statement = INLINE_EVIDENCE_ID.sub("", proposal.statement)
         statement = re.sub(r"\[[,\s]*\]", "", statement).strip()
         if proposal.status == "ambiguous" and proposal.clarification.strip():
@@ -178,7 +178,7 @@ class RagService:
                 if key not in selected and block["kind"] not in ("visual", "scan")
                 and any(evidence[ref]["title"] == block["title"] for ref in selected)
             ][:4])
-        checked = await self.luna.verify(
+        checked = await self.model.verify(
             part.question, statement, verification, original,
         )
         if not checked.supported or not checked.citations:

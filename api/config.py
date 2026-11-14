@@ -61,5 +61,4 @@ class ChatSettings(BaseSettings):
     model_config = DatabaseSettings.model_config
 
     chat_base_url: AnyHttpUrl | None = None
-    chat_model: str | None = None
     chat_api_key: SecretStr | None = None

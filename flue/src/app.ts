@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 
 import { httpUrl, required, webhookSecret } from './config.js';
 import { pool } from './db.js';
+import { ragModel } from './rag-model.js';
 import { TelegramStore } from './telegram-store.js';
 import { TelegramWorker } from './telegram-worker.js';
 
@@ -49,5 +50,6 @@ app.get('/health', async (c) => {
   }
 });
 app.route('/channels/telegram', channel.route());
+app.route('/internal/rag', ragModel);
 
 export default app;

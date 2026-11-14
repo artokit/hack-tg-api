@@ -6,12 +6,12 @@ from uuid import uuid4
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from agents.rag import Luna
 from db.models import RagJob
 from models.rag import Block, Chunk, InvalidDocument, RagUnavailable
 from repositories.rag_extract import extract_blocks, table_blocks, text_blocks
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
+from repositories.rag_model import RagModel
 
 
 log = logging.getLogger(__name__)
@@ -49,10 +49,10 @@ def validate_plan(groups, window: list[Block], start: int, document_size: int) -
 
 
 class RagIngest:
-    def __init__(self, jobs: RagJobs, index: RagIndex, luna: Luna):
+    def __init__(self, jobs: RagJobs, index: RagIndex, model: RagModel):
         self.jobs = jobs
         self.index = index
-        self.luna = luna
+        self.model = model
 
     async def worker(self, engine: AsyncEngine) -> None:
         while True:
@@ -103,7 +103,7 @@ class RagIngest:
         async def read(index: int, block: Block) -> list[Block]:
             if block.image is None:
                 return [block]
-            visual = await self.luna.read_visual(block.image, block.kind, block.label)
+            visual = await self.model.read_visual(block.image, block.kind, block.label)
             location = {"page": block.page, "box": block.box, "section": block.section, "label": block.label}
             parsed = [
                 replace(part, kind=block.kind)
@@ -178,7 +178,7 @@ class RagIngest:
             ]
             correction = ""
             for _ in range(2):
-                plan = await self.luna.plan_chunks(inputs, correction)
+                plan = await self.model.plan_chunks(inputs, correction)
                 try:
                     chunks = validate_plan(plan.groups, window, start + 1, len(blocks))
                 except ValueError as error:
