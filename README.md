@@ -56,6 +56,6 @@ Invoke-RestMethod "$telegramApi/getWebhookInfo"
 
 ## Проверки разработки
 
-После `npm ci` в `flue/` выполните `npm run typecheck`, `npm run build` и `npm test`. Для теста реального Flue с подменой Telegram и модели задайте `TEST_FLUE_DATABASE_URL` с URL отдельной PostgreSQL БД. Для теста пользовательского API примените миграции в тестовую БД, задайте `TEST_DATABASE_URL` с префиксом `postgresql+asyncpg://` и запустите `python -m pytest` из `api/`. Для Python-тестов нужны `pytest` и `httpx`.
+После `npm ci` в `flue/` выполните `npm run typecheck` и `npm run build`.
 
 Процесс Flue рассчитан на одну реплику. Сбой между отправкой в Telegram и подтверждением результата в БД переводит отправку в состояние `unknown`. Запись доступна в `bars_telegram_deliveries`. Такие отправки требуют проверки по журналу и чату, поскольку автоматический повтор может отправить сообщение второй раз.

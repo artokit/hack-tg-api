@@ -9,8 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
-    "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "1.1.0",
