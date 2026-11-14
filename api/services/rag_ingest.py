@@ -47,6 +47,25 @@ def validate_plan(groups, window: list[Block], start: int, document_size: int) -
     return chunks
 
 
+def group_adjacent(window: list[Block], start: int) -> list[Chunk]:
+    chunks = []
+    first = 0
+    size = 0
+    for offset, block in enumerate(window):
+        anchor = window[first]
+        if offset > first and (
+            offset - first == MAX_GROUP_BLOCKS or size + len(block.text) > MAX_GROUP_CHARS
+            or block.section != anchor.section or block.table_id != anchor.table_id
+            or block.kind == "heading"
+        ):
+            chunks.append(Chunk(tuple(range(start + first, start + offset)), ()))
+            first = offset
+            size = 0
+        size += len(block.text)
+    chunks.append(Chunk(tuple(range(start + first, start + len(window))), ()))
+    return chunks
+
+
 class RagIngest:
     def __init__(
         self, jobs: RagJobs, index: RagIndex, model: RagModel,
@@ -198,15 +217,18 @@ class RagIngest:
             ]
             correction = ""
             for _ in range(2):
-                plan = await self.model.plan_chunks(inputs, correction)
                 try:
+                    plan = await self.model.plan_chunks(inputs, correction)
                     chunks = validate_plan(plan["groups"], window, start + 1, len(blocks))
                 except ValueError as error:
                     correction = str(error)
+                except RagUnavailable:
+                    chunks = group_adjacent(window, start + 1)
+                    break
                 else:
                     break
             else:
-                raise RagUnavailable("invalid_chunk_plan")
+                chunks = group_adjacent(window, start + 1)
             if end < len(blocks) and not (
                 blocks[end].identifiers or blocks[end].kind in ("visual", "scan")
             ):
