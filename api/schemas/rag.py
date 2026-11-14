@@ -2,18 +2,32 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
 
 from models.rag import BlockKind
 
 
+SOURCE_ID_PATTERN = r"^[a-zA-Z0-9_./:\-]+$"
+
+
 class RagJobCreated(BaseModel):
     job_id: UUID
+    source_id: str
+    file_id: UUID | None = None
+
+
+class RagUrlRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    url: AnyHttpUrl
+    title: str | None = Field(default=None, min_length=1, max_length=250)
+    source_id: str | None = Field(default=None, min_length=1, max_length=100, pattern=SOURCE_ID_PATTERN)
 
 
 class RagJobRead(BaseModel):
     id: UUID
     source_id: str
+    file_id: UUID | None = None
     status: Literal["queued", "running", "succeeded", "failed"]
     error_code: str | None
     version: str | None

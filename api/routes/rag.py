@@ -1,19 +1,18 @@
-from pathlib import PurePath
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
-from pydantic import AnyHttpUrl
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, UploadFile
+from fastapi.responses import Response, StreamingResponse
 
-from depends import get_current_user, get_rag_service, require_bot_token
-from models.rag import RagUnavailable
-from schemas.rag import RagEvidenceRead, RagJobCreated, RagJobRead, RagSearchRequest
-from services.rag import RagService, UnexpectedDocumentId
+from depends import get_current_user, get_rag_originals, get_rag_service, require_bot_token
+from models.rag import DocumentTooLarge, InvalidDocument, RagUnavailable
+from repositories.rag_files import MAX_DOCUMENT_BYTES
+from schemas.rag import SOURCE_ID_PATTERN, RagEvidenceRead, RagJobCreated, RagJobRead, RagSearchRequest, RagUrlRequest
+from services.rag import RagOriginals, RagService, UnexpectedDocumentId
 
 
 router = APIRouter(tags=["rag"])
 Service = Annotated[RagService, Depends(get_rag_service)]
-MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
 @router.post(
@@ -22,31 +21,79 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 async def upload_document(
     service: Service,
     file: UploadFile,
-    source_id: Annotated[str, Form(min_length=1, max_length=100, pattern=r"^[a-zA-Z0-9_./:\-]+$")],
-    title: Annotated[str, Form(min_length=1, max_length=250)],
-    source_url: Annotated[AnyHttpUrl | None, Form()] = None,
+    source_id: Annotated[str | None, Form(min_length=1, max_length=100, pattern=SOURCE_ID_PATTERN)] = None,
+    title: Annotated[str | None, Form(min_length=1, max_length=250)] = None,
 ):
-    format = PurePath(file.filename or "").suffix.lower().removeprefix(".")
-    limit = MAX_UPLOAD_BYTES
     try:
-        if format not in {"pdf", "docx", "md"}:
-            raise HTTPException(status_code=415, detail="Use a PDF, DOCX or Markdown file")
-        if not title.strip() or source_url and (source_url.username or source_url.password):
+        if title is not None and not title.strip():
             raise HTTPException(status_code=422, detail="Invalid source metadata")
-        if file.size is not None and file.size > limit:
+        if file.size is not None and file.size > MAX_DOCUMENT_BYTES:
             raise HTTPException(status_code=413, detail="Document is too large")
-        data = await file.read(limit + 1)
+        data = await file.read(MAX_DOCUMENT_BYTES + 1)
     finally:
         await file.close()
-    if len(data) > limit:
-        raise HTTPException(status_code=413, detail="Document is too large")
-    if not data:
-        raise HTTPException(status_code=422, detail="Document is empty")
     try:
-        job_id = await service.submit(source_id, title.strip(), str(source_url) if source_url else None, format, data)
+        job_id, source_id, file_id = await service.submit_file(
+            source_id, title.strip() if title else None, file.filename or "", data,
+        )
+    except DocumentTooLarge as error:
+        raise HTTPException(status_code=413, detail="Document is too large") from error
+    except InvalidDocument as error:
+        status = 415 if str(error) == "unsupported_source_format" else 422
+        raise HTTPException(status_code=status, detail=str(error)) from error
     except RagUnavailable as error:
         raise HTTPException(status_code=503, detail="Document upload temporarily unavailable") from error
-    return RagJobCreated(job_id=job_id)
+    return RagJobCreated(job_id=job_id, source_id=source_id, file_id=file_id)
+
+
+@router.post(
+    "/rag/documents/from-url", response_model=RagJobCreated, status_code=202,
+    response_model_exclude_none=True, dependencies=[Depends(get_current_user)],
+)
+async def import_from_url(source: RagUrlRequest, service: Service):
+    if source.url.username or source.url.password:
+        raise HTTPException(status_code=422, detail="Invalid source URL")
+    try:
+        job_id, source_id = await service.submit_url(source.source_id, source.title, str(source.url))
+    except RagUnavailable as error:
+        raise HTTPException(status_code=503, detail="Document import temporarily unavailable") from error
+    return RagJobCreated(job_id=job_id, source_id=source_id)
+
+
+@router.get("/files/{file_id}")
+async def open_file(
+    file_id: UUID, originals: Annotated[RagOriginals, Depends(get_rag_originals)],
+    sig: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+    byte_range: Annotated[str | None, Header(alias="Range", max_length=100)] = None,
+):
+    try:
+        upstream = await originals.open(file_id, sig, byte_range)
+    except RagUnavailable as error:
+        raise HTTPException(status_code=503, detail="File temporarily unavailable") from error
+    if upstream is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    if upstream.status_code in (404, 416):
+        await upstream.aclose()
+        return Response(status_code=upstream.status_code, headers={
+            name: upstream.headers[name] for name in ("content-range",) if name in upstream.headers
+        })
+
+    async def stream():
+        try:
+            async for chunk in upstream.aiter_raw():
+                yield chunk
+        finally:
+            await upstream.aclose()
+
+    headers = {
+        name: upstream.headers[name] for name in
+        ("content-type", "content-disposition", "content-length", "content-range", "accept-ranges")
+        if name in upstream.headers
+    }
+    headers.update({
+        "cache-control": "private, no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer",
+    })
+    return StreamingResponse(stream(), status_code=upstream.status_code, headers=headers)
 
 
 @router.get("/rag/jobs/{job_id}", response_model=RagJobRead, dependencies=[Depends(get_current_user)])

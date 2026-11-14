@@ -1,23 +1,23 @@
 import * as v from 'valibot';
 
-import { delivery, type RagDelivery, type RagSource } from './rag.js';
+import { delivery } from './rag.js';
 
 const ragUnavailable = 'Поиск по документации сейчас недоступен. Попробуй ещё раз чуть позже.';
 
-function escapeMarkdown(text: string): string {
-  return text.replace(/[&<>"'\\`*_{}\[\]()#+\-!.|]/g, '\\$&');
+function escapeHtml(text: string): string {
+  return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 
 function originalLink(raw: string | null): string | null {
   if (!raw) return null;
   try {
     const url = new URL(raw);
-    if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) {
-      return url.href.replace(/[()]/g, (value) => value === '(' ? '%28' : '%29');
-    }
+    if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) return url.href;
   } catch {}
   return null;
 }
+
+export type RagMessage = { text: string; html: string };
 
 function shorten(text: string, length: number): string {
   if (text.length <= length) return text;
@@ -27,73 +27,53 @@ function shorten(text: string, length: number): string {
   return text.slice(0, end) + '…';
 }
 
-export function renderRag(...values: unknown[]): string {
+export function renderRag(...values: unknown[]): RagMessage {
   const responses = values.flatMap((value) => {
     const parsed = v.safeParse(delivery, value);
     return parsed.success && parsed.output.status !== 'unavailable' ? [parsed.output] : [];
   });
-  if (!responses.length) return ragUnavailable;
-  const response = {
-    status: responses.at(-1)!.status,
-    parts: responses.flatMap((item) => item.parts),
-    sources: responses.flatMap((item) => item.sources),
-  };
-  const sources = new Map(response.sources.map((item) => [item.id, item]));
-  const paragraphs: string[] = [];
+  if (!responses.length) return { text: ragUnavailable, html: `<p>${ragUnavailable}</p>` };
+
+  const sources = new Map(responses.flatMap((response) => response.sources).map((source) => [source.id, source]));
   const labels = new Map<string, number>();
-  for (const item of response.parts) {
+  const paragraphs: string[] = [];
+  for (const item of responses.flatMap((response) => response.parts)) {
     if (item.status === 'supported') {
       const ids = item.source_ids.filter((id) => sources.has(id));
       if (!ids.length || !item.statement.trim()) continue;
       for (const id of ids) if (!labels.has(id)) labels.set(id, labels.size + 1);
-      const refs = ids.map((id) => `[${labels.get(id)}]`).join(' ');
-      paragraphs.push(`${escapeMarkdown(item.statement)} ${escapeMarkdown(refs)}`);
-    } else if (item.clarification) {
-      paragraphs.push(escapeMarkdown(item.clarification));
-    } else if (response.parts.length > 1 || response.status !== 'clarify') {
-      const question = item.question.slice(0, 170);
-      paragraphs.push(`По вопросу «${escapeMarkdown(question)}» в базе нет подтверждения.`);
+      paragraphs.push(`${item.statement} ${ids.map((id) => `[${labels.get(id)}]`).join(' ')}`);
+    } else {
+      paragraphs.push(item.clarification ||
+        `По вопросу «${shorten(item.question, 170)}» в базе нет подтверждения.`);
     }
   }
   if (!paragraphs.length) paragraphs.push('В базе документации не нашлось подтверждённого ответа.');
-  const evidence = [];
-  for (const [id, ordinal] of labels) {
-    const item = sources.get(id)!;
-    const location = item.page ? `стр. ${item.page}` : item.section.join(' / ');
-    const title = escapeMarkdown([item.title, location, ...item.identifiers].filter(Boolean).join(', '));
-    const link = originalLink(item.url);
-    const label = link ? `[${title}](${link})` : title;
-    const excerpt = item.visual
-      ? 'Описание распознано с изображения.'
-      : item.quote && `«${escapeMarkdown(item.quote)}»`;
-    evidence.push(`${ordinal}\\. ${label}${excerpt ? `\n${excerpt}` : ''}`);
-  }
-  const full = [...paragraphs, ...evidence].join('\n\n');
-  return full.length <= 4000 ? full : renderCompactRag(response, sources);
-}
 
-function renderCompactRag(response: Exclude<RagDelivery, { status: 'unavailable' }>, sources: Map<string, RagSource>): string {
-  const lines: string[] = [];
-  const parts = response.parts.slice(-6);
-  const perPart = Math.floor(3960 / parts.length);
-  for (const item of parts) {
-    const itemSource = item.source_ids.map((id) => sources.get(id)).find((value) => value);
-    if (item.status !== 'supported' || !itemSource) {
-      lines.push(escapeMarkdown(shorten(item.clarification || 'Для части вопроса нет подтверждения.', 110)));
-      continue;
+  const html = paragraphs.map((text) => `<p>${escapeHtml(text)}</p>`);
+  const plain = [...paragraphs];
+  for (const [id, ordinal] of labels) {
+    const source = sources.get(id)!;
+    const title = shorten(source.title, 250);
+    const location = [
+      source.page ? `стр. ${source.page}` : '',
+      shorten(source.section.join(' / '), 200),
+      ...source.identifiers,
+    ].filter(Boolean).join(' · ');
+    const link = originalLink(source.url);
+    const name = escapeHtml(title);
+    const label = link ? `<a href="${escapeHtml(link)}">${name}</a>` : name;
+    const placement = location ? ` · ${escapeHtml(location)}` : '';
+    html.push(`<p>${ordinal}. <b>${label}</b>${placement}</p>`);
+    const entry = [`${ordinal}. ${title}${location ? ` · ${location}` : ''}`, link];
+    if (source.visual) {
+      html.push('<p>Описание распознано с изображения.</p>');
+      entry.push('Описание распознано с изображения.');
+    } else if (source.quote) {
+      html.push(`<blockquote>${escapeHtml(source.quote).replaceAll('\n', '<br>')}</blockquote>`);
+      entry.push(`«${source.quote}»`);
     }
-    const label = escapeMarkdown(shorten(
-      [itemSource.title, itemSource.page ? `стр. ${itemSource.page}` : itemSource.section.join(' / ')]
-        .filter(Boolean).join(', '), 54,
-    ));
-    const link = originalLink(itemSource.url);
-    const sourceLabel = link && link.length <= Math.floor(perPart / 3) ? `[${label}](${link})` : label;
-    const excerpt = itemSource.visual ? 'По изображению.' : itemSource.quote;
-    const quote = excerpt ? escapeMarkdown(shorten(excerpt, 65)) : '';
-    const available = Math.floor((perPart - sourceLabel.length - quote.length - 2) / 2);
-    lines.push([
-      escapeMarkdown(shorten(item.statement, Math.max(20, available))), sourceLabel, quote,
-    ].filter(Boolean).join('\n'));
+    plain.push(entry.filter(Boolean).join('\n'));
   }
-  return lines.join('\n\n');
+  return { text: plain.join('\n\n'), html: html.join('') };
 }

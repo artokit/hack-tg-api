@@ -25,20 +25,21 @@ class RagJobs:
             raise RagQueueUnavailable("import_queue_unavailable") from error
 
     async def enqueue(
-        self, job_id: UUID, index_key: str, source_id: str, title: str, source_url: str | None, format: str
+        self, job_id: UUID, index_key: str, source_id: str, title: str | None,
+        source_url: str | None, format: str, file_id: UUID | None = None,
     ) -> None:
         async with self.session(transaction=True) as session:
             session.add(RagJob(
                 id=job_id,
-                index_key=index_key, source_id=source_id, title=title, source_url=source_url,
-                format=format,
+                index_key=index_key, source_id=source_id, title=title or "", source_url=source_url,
+                format=format, file_id=file_id,
             ))
 
     async def read(self, job_id: UUID, index_key: str):
         async with self.session() as session:
             result = await session.execute(
                 select(
-                    RagJob.id, RagJob.source_id, RagJob.status, RagJob.error_code,
+                    RagJob.id, RagJob.source_id, RagJob.file_id, RagJob.status, RagJob.error_code,
                     RagJob.version, RagJob.chunk_count, RagJob.created_at, RagJob.updated_at,
                 ).where(RagJob.id == job_id, RagJob.index_key == index_key)
             )
@@ -92,7 +93,9 @@ class RagJobs:
             job.status = "running"
             job.version = job.version or version
             job.updated_at = func.now()
-            return RagImport(job.id, job.source_id, job.title, job.source_url, job.format, job.version, resumed)
+            return RagImport(
+                job.id, job.source_id, job.title, job.source_url, job.format, job.version, resumed, job.file_id,
+            )
 
     async def publish(self, job: RagImport, index_key: str, count: int) -> bool:
         async with self.session(transaction=True) as session:

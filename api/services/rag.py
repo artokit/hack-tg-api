@@ -1,12 +1,13 @@
 import logging
 import re
+from pathlib import PurePath
 from uuid import UUID, uuid4
 
-from models.rag import RagQueueUnavailable, RagUnavailable
+from models.rag import DocumentTooLarge, InvalidDocument, RagQueueUnavailable, RagUnavailable
 from repositories.rag_extract import identifiers
+from repositories.rag_files import DOCUMENT_FORMATS, MAX_DOCUMENT_BYTES, RagFiles
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
-from repositories.rag_uploads import RagUploads
 
 
 log = logging.getLogger(__name__)
@@ -19,26 +20,46 @@ class UnexpectedDocumentId(ValueError):
     pass
 
 
+class RagOriginals:
+    def __init__(self, files: RagFiles):
+        self.files = files
+
+    async def open(self, file_id: UUID, signature: str, byte_range: str | None):
+        if self.files.permits(file_id, signature):
+            return await self.files.open(file_id, byte_range)
+        return None
+
+
 class RagService:
-    def __init__(self, jobs: RagJobs, index: RagIndex, uploads: RagUploads):
+    def __init__(self, jobs: RagJobs, index: RagIndex, files: RagFiles):
         self.jobs = jobs
         self.index = index
-        self.uploads = uploads
+        self.files = files
 
-    async def submit(
-        self, source_id: str, title: str, source_url: str | None, format: str, data: bytes
-    ) -> UUID:
+    async def submit_file(
+        self, source_id: str | None, title: str | None, filename: str, data: bytes,
+    ) -> tuple[UUID, str, UUID]:
+        name = PurePath(filename.replace("\\", "/")).name
+        format = PurePath(name).suffix.lower().removeprefix(".")
+        if format not in DOCUMENT_FORMATS:
+            raise InvalidDocument("unsupported_source_format")
+        if len(data) > MAX_DOCUMENT_BYTES:
+            raise DocumentTooLarge("document_too_large")
+        if not data:
+            raise InvalidDocument("empty_document")
         job_id = uuid4()
-        try:
-            await self.uploads.save(job_id, data)
-        except OSError as error:
-            raise RagUnavailable("upload_storage_unavailable") from error
-        try:
-            await self.jobs.enqueue(job_id, self.index.key, source_id, title, source_url, format)
-        except RagQueueUnavailable:
-            self.uploads.discard(job_id)
-            raise
-        return job_id
+        source_id = source_id or str(uuid4())
+        file_id = await self.files.upload(name, data)
+        await self.jobs.enqueue(
+            job_id, self.index.key, source_id, title or name[:250], None, format, file_id,
+        )
+        return job_id, source_id, file_id
+
+    async def submit_url(self, source_id: str | None, title: str | None, url: str) -> tuple[UUID, str]:
+        job_id = uuid4()
+        source_id = source_id or str(uuid4())
+        await self.jobs.enqueue(job_id, self.index.key, source_id, title, url, "url")
+        return job_id, source_id
 
     async def read_job(self, job_id: UUID):
         return await self.jobs.read(job_id, self.index.key)
@@ -87,13 +108,14 @@ class RagService:
             }
         return list(evidence.values())
 
-    @staticmethod
     def evidence(
-        chunks: list[dict], identifier: str | None, linked: set[str] | None = None,
+        self, chunks: list[dict], identifier: str | None, linked: set[str] | None = None,
     ) -> dict[str, dict]:
         found: dict[str, dict] = {}
         size = 0
         for chunk in chunks:
+            file_id = chunk.get("file_id")
+            source_url = self.files.link(UUID(file_id)) if file_id else chunk["source_url"]
             for block in chunk["evidence"]:
                 if (
                     block["id"] in found
@@ -105,7 +127,7 @@ class RagService:
                 if size > 23500:
                     return found
                 found[block["id"]] = {
-                    **block, "title": chunk["title"], "source_url": chunk["source_url"],
+                    **block, "title": chunk["title"], "source_url": source_url,
                     "format": chunk["format"],
                 }
         return found

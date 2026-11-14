@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 
@@ -7,14 +8,23 @@ from fastapi import FastAPI
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from config import AuthSettings, DatabaseSettings, EmbeddingSettings, InviteSettings, RedisSettings
+from config import AuthSettings, DatabaseSettings, EmbeddingSettings, FileSettings, InviteSettings, RedisSettings
 from db.db import create_engine
+from models.rag import RagImport
+from repositories.rag_files import RagFiles
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
 from repositories.rag_model import RagModel
 from repositories.rag_uploads import RagUploads
-from services.rag import RagService
+from services.rag import RagOriginals, RagService
 from services.rag_ingest import RagIngest
+
+
+def redact_file_signature(record: logging.LogRecord) -> bool:
+    args = record.args
+    if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str) and args[2].startswith("/files/"):
+        record.args = (*args[:2], args[2].partition("?")[0], *args[3:])
+    return True
 
 
 @asynccontextmanager
@@ -25,6 +35,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     embeddings = EmbeddingSettings()
     redis_settings = RedisSettings()
     async with AsyncExitStack() as stack:
+        access_log = logging.getLogger("uvicorn.access")
+        access_log.addFilter(redact_file_signature)
+        stack.callback(access_log.removeFilter, redact_file_signature)
         engine = create_engine(settings.database_url.get_secret_value())
         stack.push_async_callback(engine.dispose)
         app.state.engine = engine
@@ -38,17 +51,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         stack.push_async_callback(redis.aclose)
         app.state.redis = redis
         app.state.rag_service = None
+        file_settings = FileSettings()
+        http = await stack.enter_async_context(httpx.AsyncClient(timeout=20))
+        token = app.state.invite_settings.bot_api_token
+        secret = token.get_secret_value() if token else None
+        files = RagFiles(http, str(file_settings.file_service_url), str(file_settings.rag_files_public_url), secret)
+        app.state.rag_originals = RagOriginals(files)
         if embeddings.embedding_base_url:
             base_url = str(embeddings.embedding_base_url)
             key = embeddings.embedding_api_key.get_secret_value() if embeddings.embedding_api_key else None
-            http = await stack.enter_async_context(httpx.AsyncClient(timeout=20))
-            token = app.state.invite_settings.bot_api_token
-            model = RagModel(http, token.get_secret_value() if token else None)
+            model = RagModel(http, secret)
             jobs = RagJobs(app.state.sessions, engine)
             index = RagIndex(http, base_url, key)
             uploads = RagUploads(index.key)
-            app.state.rag_service = RagService(jobs, index, uploads)
-            importer = RagIngest(jobs, index, model, uploads.load, uploads.discard)
+            app.state.rag_service = RagService(jobs, index, files)
+
+            async def load_import(job: RagImport) -> bytes:
+                return await files.load(job.file_id) if job.file_id else await uploads.load(job)
+
+            importer = RagIngest(jobs, index, model, load_import, uploads.discard)
             worker = asyncio.create_task(importer.worker(), name="rag-import")
             stack.push_async_callback(stop_worker, worker)
         yield

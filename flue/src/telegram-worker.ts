@@ -120,12 +120,19 @@ export class TelegramWorker {
       const stopTyping = this.output.beginTyping(update.chat_id);
       let deliveryId = `submission:${submissionId}`;
       let replyText = '';
+      let replyHtml: string | undefined;
       try {
         const reply = await agent.read(submissionId);
         const responseId = reply.metadata?.telegramResponseId;
         if (typeof responseId === 'string') deliveryId = `response:${responseId}`;
         const ragResults = reply.data.ragAnswer;
-        replyText = ragResults?.length ? renderRag(...ragResults) : reply.text.trim();
+        if (ragResults?.length) {
+          const rendered = renderRag(...ragResults);
+          replyText = rendered.text;
+          replyHtml = rendered.html;
+        } else {
+          replyText = reply.text.trim();
+        }
       } catch (error) {
         if (!(error instanceof AgentRunError)) throw error;
         this.logFailure(update, error);
@@ -133,7 +140,7 @@ export class TelegramWorker {
         stopTyping();
       }
       if (!replyText) deliveryId = 'failure:' + await responseSubmission(submissionId);
-      await this.output.send(deliveryId, update.chat_id, replyText || unavailable, !!replyText);
+      await this.output.send(deliveryId, update.chat_id, replyText || unavailable, !!replyText, replyHtml);
     });
   }
 

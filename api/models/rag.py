@@ -37,9 +37,14 @@ class RagImport:
     format: str
     version: str
     resumed: bool
+    file_id: UUID | None = None
 
 
 class InvalidDocument(ValueError):
+    pass
+
+
+class DocumentTooLarge(InvalidDocument):
     pass
 
 

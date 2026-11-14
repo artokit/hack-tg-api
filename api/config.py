@@ -68,3 +68,10 @@ class EmbeddingSettings(BaseSettings):
 
     embedding_base_url: AnyHttpUrl | None = None
     embedding_api_key: SecretStr | None = None
+
+
+class FileSettings(BaseSettings):
+    model_config = DatabaseSettings.model_config
+
+    file_service_url: AnyHttpUrl = AnyHttpUrl("http://file-service:3000")
+    rag_files_public_url: AnyHttpUrl = AnyHttpUrl("https://bars-bot.cheremha.ru")

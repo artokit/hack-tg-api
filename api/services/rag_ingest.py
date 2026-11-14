@@ -10,6 +10,7 @@ from repositories.rag_extract import extract_blocks, table_blocks, text_blocks
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
 from repositories.rag_model import RagModel
+from repositories.rag_urls import load_url
 
 
 log = logging.getLogger(__name__)
@@ -114,7 +115,11 @@ class RagIngest:
             async with asyncio.timeout(1800):
                 if job.resumed:
                     await self.index.discard(job.version)
-                data = await self.load(job)
+                if job.format == "url" and job.source_url:
+                    data, format, default_title = await load_url(job.source_url)
+                    job = replace(job, title=job.title or default_title[:250], format=format)
+                else:
+                    data = await self.load(job)
                 blocks = await asyncio.to_thread(extract_blocks, data, job.format)
                 blocks = await self.enrich(blocks)
                 if not blocks:
@@ -278,6 +283,7 @@ class RagIngest:
             "version": job.version,
             "title": job.title,
             "source_url": job.source_url,
+            "file_id": str(job.file_id) if job.file_id else None,
             "format": job.format,
             "order": order,
             "identifiers": list(dict.fromkeys(identifier for block in indexed for identifier in block.identifiers)),
