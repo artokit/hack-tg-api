@@ -8,9 +8,11 @@ from config import AuthSettings
 from repositories.employees import EmployeeRepository
 from repositories.health import HealthRepository
 from repositories.users import UserRepository
+from repositories.tickets import TicketRepository
 from services.auth import AuthService
 from services.employees import EmployeeService
 from services.health import HealthService
+from services.ticket_service import TicketService
 
 bearer_scheme = HTTPBearer(scheme_name="UserJWT", bearerFormat="JWT", auto_error=False)
 
@@ -59,3 +61,9 @@ def get_employee_service(
     session: AsyncSession = Depends(get_async_session),
 ) -> EmployeeService:
     return EmployeeService(EmployeeRepository(session))
+
+
+def get_ticket_service(
+    session: AsyncSession = Depends(get_async_session),
+) -> TicketService:
+    return TicketService(TicketRepository(session))
