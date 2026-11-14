@@ -38,7 +38,7 @@ class RagFiles:
         return file_id
 
     def link(self, file_id: UUID) -> str | None:
-        return f"{self.public_url}/files/{file_id}?sig={self.signature(file_id)}" if self.token else None
+        return f"{self.public_url}/file-service/{file_id}?sig={self.signature(file_id)}" if self.token else None
 
     async def open(self, file_id: UUID, byte_range: str | None = None) -> httpx.Response:
         if not self.token:

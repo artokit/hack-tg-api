@@ -60,7 +60,7 @@ async def import_from_url(source: RagUrlRequest, service: Service):
     return RagJobCreated(job_id=job_id, source_id=source_id)
 
 
-@router.get("/files/{file_id}")
+@router.get("/file-service/{file_id}")
 async def open_file(
     file_id: UUID, originals: Annotated[RagOriginals, Depends(get_rag_originals)],
     sig: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],

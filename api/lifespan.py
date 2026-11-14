@@ -22,7 +22,7 @@ from services.rag_ingest import RagIngest
 
 def redact_file_signature(record: logging.LogRecord) -> bool:
     args = record.args
-    if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str) and args[2].startswith("/files/"):
+    if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str) and args[2].startswith("/file-service/"):
         record.args = (*args[:2], args[2].partition("?")[0], *args[3:])
     return True
 
