@@ -2,18 +2,24 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "0008"
-down_revision = "0007"
+revision = "0009"
+down_revision = "0008"
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
+    op.add_column(
+        "employees",
+        sa.Column("is_parsed", sa.Boolean(), nullable=False, server_default=sa.false()),
+        if_not_exists=True,
+    )
     op.create_table(
         "rag_documents",
         sa.Column("source_id", sa.String(100), primary_key=True),
         sa.Column("index_key", sa.String(64), primary_key=True),
         sa.Column("active_version", sa.String(36), nullable=False),
+        if_not_exists=True,
     )
     op.create_table(
         "rag_jobs",
@@ -30,9 +36,11 @@ def upgrade() -> None:
         sa.Column("purged_at", sa.DateTime(timezone=True)),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        if_not_exists=True,
     )
     op.create_index(
-        "ix_rag_jobs_index_status_created", "rag_jobs", ["index_key", "status", "created_at", "id"]
+        "ix_rag_jobs_index_status_created", "rag_jobs", ["index_key", "status", "created_at", "id"],
+        if_not_exists=True,
     )
 
 

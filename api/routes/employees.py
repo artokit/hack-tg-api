@@ -3,7 +3,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from depends import get_current_user, get_employee_service, require_bot_token
-from schemas.employees import EmployeeCreate, EmployeePage, EmployeeRead
+from schemas.employees import (
+    EmployeeCreate,
+    EmployeePage,
+    EmployeeRead,
+    EmployeeTelegramUpdate,
+)
 from services.employees import EmployeeService
 from utils.exceptions import EmployeeCacheUnavailableError
 
@@ -54,6 +59,22 @@ async def get_employee_by_telegram_id(
     if employee is None:
         raise HTTPException(status_code=404, detail="Employee not found")
     return employee
+
+
+@private_router.patch(
+    "/employees/by-telegram-id/{telegram_id}", response_model=EmployeeRead
+)
+async def update_employee_from_telegram(
+    telegram_id: int,
+    data: EmployeeTelegramUpdate,
+    service: EmployeeService = Depends(get_employee_service),
+):
+    try:
+        return await service.update_from_telegram(telegram_id, data)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail="Employee not found") from error
+    except EmployeeCacheUnavailableError as error:
+        raise HTTPException(status_code=503, detail="Employee cache unavailable") from error
 
 
 @router.delete("/employees/{employee_id}", status_code=204)

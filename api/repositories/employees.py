@@ -39,6 +39,25 @@ class EmployeeRepository:
             await self._session.rollback()
             raise
 
+    async def update_from_telegram(
+        self,
+        employee: Employee,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+    ) -> Employee:
+        employee.username = username
+        employee.first_name = first_name
+        employee.last_name = last_name
+        employee.is_parsed = True
+        try:
+            await self._session.commit()
+        except Exception:
+            await self._session.rollback()
+            raise
+        await self._session.refresh(employee)
+        return employee
+
     async def create(
         self,
         telegram_id: int,
@@ -63,12 +82,14 @@ class EmployeeRepository:
         first_name: str | None,
         last_name: str | None,
         username: str | None,
+        is_parsed: bool = False,
     ) -> Employee:
         employee = Employee(
             telegram_id=telegram_id,
             first_name=first_name,
             last_name=last_name,
             username=username,
+            is_parsed=is_parsed,
         )
         self._session.add(employee)
         return employee

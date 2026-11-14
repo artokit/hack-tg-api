@@ -64,6 +64,74 @@ services:
       timeout: 5s
       retries: 12
 
+  file-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${FILE_DB_USER:-file_service}
+      POSTGRES_PASSWORD: ${FILE_DB_PASSWORD:?Set FILE_DB_PASSWORD in .env}
+      POSTGRES_DB: ${FILE_DB_NAME:-files}
+    volumes:
+      - file_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: netvark/minio@sha256:77281ea99af0d02e2880e91d345bf81cae584454aedffbb7912331774f42d4bf
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-file_storage_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      MINIO_ROOT_USER_FILE: ""
+      MINIO_ROOT_PASSWORD_FILE: ""
+      MINIO_ACCESS_KEY_FILE: ""
+      MINIO_SECRET_KEY_FILE: ""
+      MINIO_KMS_SECRET_KEY_FILE: ""
+      MINIO_CONFIG_ENV_FILE: ""
+      MINIO_REGION_NAME: ru-1
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      - "127.0.0.1:${MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  file-service:
+    build: ./file-service
+    restart: unless-stopped
+    depends_on:
+      file-postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DB_USER: ${FILE_DB_USER:-file_service}
+      DB_PASS: ${FILE_DB_PASSWORD:?Set FILE_DB_PASSWORD in .env}
+      DB_NAME: ${FILE_DB_NAME:-files}
+      DB_HOST: file-postgres
+      DB_PORT: "5432"
+      S3_STORAGE_URL: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-file_storage_admin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-files}
+    ports:
+      - "127.0.0.1:${FILE_SERVICE_PORT:-8080}:3000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/file-service/openapi.json', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
   flue:
     build: ./flue
     restart: unless-stopped
@@ -95,3 +163,5 @@ services:
 volumes:
   postgres_flue_data:
   qdrant_data:
+  file_postgres_data:
+  minio_data:
