@@ -2,7 +2,6 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from datetime import timedelta
 from uuid import UUID, uuid4
 
 from models.rag import Block, Chunk, InvalidDocument, RagImport, RagQueueUnavailable, RagUnavailable
@@ -19,7 +18,6 @@ WINDOW_BLOCKS = 30
 TAIL_BLOCKS = 6
 MAX_GROUP_CHARS = 6000
 MAX_GROUP_BLOCKS = 10
-RETIRED_VERSION_GRACE = timedelta(minutes=2)
 
 
 def validate_plan(groups, window: list[Block], start: int, document_size: int) -> list[Chunk]:
@@ -71,12 +69,14 @@ class RagIngest:
     def __init__(
         self, jobs: RagJobs, index: RagIndex, model: RagModel,
         load: Callable[[RagImport], Awaitable[bytes]], discard_upload: Callable[[UUID], None],
+        delete_file: Callable[[UUID], Awaitable[None]],
     ):
         self.jobs = jobs
         self.index = index
         self.model = model
         self.load = load
         self.discard_upload = discard_upload
+        self.delete_file = delete_file
 
     async def worker(self) -> None:
         next_cleanup = 0.0
@@ -87,6 +87,7 @@ class RagIngest:
                         while True:
                             now = asyncio.get_running_loop().time()
                             if now >= next_cleanup:
+                                await self.purge_artifacts()
                                 await self.purge_retired()
                                 next_cleanup = now + 30
                             job = await self.jobs.claim(str(uuid4()), self.index.key)
@@ -98,9 +99,28 @@ class RagIngest:
             await asyncio.sleep(1)
 
     async def purge_retired(self) -> None:
-        for job_id, version in await self.jobs.retired(self.index.key, RETIRED_VERSION_GRACE):
+        for job_id, version in await self.jobs.retired(self.index.key):
             if await self.discard(version):
-                await self.jobs.mark_purged(job_id)
+                await self.jobs.mark_purged(job_id, version)
+
+    async def purge_artifacts(self) -> None:
+        async def purge(artifact):
+            success = not artifact.version or await self.discard(artifact.version)
+            if artifact.delete_original and artifact.file_id:
+                try:
+                    await self.delete_file(artifact.file_id)
+                except RagUnavailable:
+                    log.warning("RAG could not delete original %s", artifact.file_id)
+                    success = False
+            if artifact.upload_job_id:
+                self.discard_upload(artifact.upload_job_id)
+            await self.jobs.finish_cleanup(artifact, success=success)
+
+        results = await asyncio.gather(*(purge(artifact) for artifact in await self.jobs.cleanup_candidates(self.index.key)),
+                                       return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
     async def discard(self, version: str) -> bool:
         try:

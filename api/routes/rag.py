@@ -1,3 +1,5 @@
+from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Annotated
 from uuid import UUID
 
@@ -5,7 +7,7 @@ from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, Uplo
 from fastapi.responses import Response, StreamingResponse
 
 from depends import get_current_user, get_rag_originals, get_rag_service, require_bot_token
-from models.rag import DocumentTooLarge, InvalidDocument, RagUnavailable
+from models.rag import DocumentTooLarge, InvalidDocument, RagDocumentNotFound, RagUnavailable
 from repositories.rag_files import MAX_DOCUMENT_BYTES
 from schemas.rag import (
     SOURCE_ID_PATTERN, RagEvidenceRead, RagJobCreated, RagJobPage, RagJobRead, RagSearchRequest, RagUrlRequest,
@@ -26,6 +28,13 @@ async def upload_document(
     source_id: Annotated[str | None, Form(min_length=1, max_length=100, pattern=SOURCE_ID_PATTERN)] = None,
     title: Annotated[str | None, Form(min_length=1, max_length=250)] = None,
 ):
+    return await save_upload(file, title, partial(service.submit_file, source_id))
+
+
+async def save_upload(
+    file: UploadFile, title: str | None,
+    submit: Callable[[str | None, str, bytes], Awaitable[tuple[UUID, str, UUID]]],
+) -> RagJobCreated:
     try:
         if title is not None and not title.strip():
             raise HTTPException(status_code=422, detail="Invalid source metadata")
@@ -35,9 +44,9 @@ async def upload_document(
     finally:
         await file.close()
     try:
-        job_id, source_id, file_id = await service.submit_file(
-            source_id, title.strip() if title else None, file.filename or "", data,
-        )
+        job_id, source_id, file_id = await submit(title.strip() if title else None, file.filename or "", data)
+    except RagDocumentNotFound as error:
+        raise HTTPException(status_code=404, detail="Document not found") from error
     except DocumentTooLarge as error:
         raise HTTPException(status_code=413, detail="Document is too large") from error
     except InvalidDocument as error:
@@ -120,6 +129,26 @@ async def read_job(job_id: UUID, service: Service):
     if job is None:
         raise HTTPException(status_code=404, detail="Import job not found")
     return job
+
+
+@router.put(
+    "/rag/jobs/{job_id}", response_model=RagJobCreated, status_code=202, dependencies=[Depends(get_current_user)],
+)
+async def replace_document(
+    job_id: UUID, service: Service, file: UploadFile,
+    title: Annotated[str | None, Form(min_length=1, max_length=250)] = None,
+):
+    return await save_upload(file, title, partial(service.replace_file, job_id))
+
+
+@router.delete("/rag/jobs/{job_id}", status_code=204, dependencies=[Depends(get_current_user)])
+async def delete_document(job_id: UUID, service: Service):
+    try:
+        await service.delete_document(job_id)
+    except RagDocumentNotFound as error:
+        raise HTTPException(status_code=404, detail="Document not found") from error
+    except RagUnavailable as error:
+        raise HTTPException(status_code=503, detail="Document deletion temporarily unavailable") from error
 
 
 @router.post(
