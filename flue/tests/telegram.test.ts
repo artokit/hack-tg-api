@@ -55,6 +55,8 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
   let run: ChildProcess | undefined;
   let serverLogs = '';
   let inviteRequests = 0;
+  let employee = false;
+  let membershipChecks = 0;
 
   const mock = createServer(async (req, res) => {
     try {
@@ -62,14 +64,26 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
+      if (path === `/private/employees/by-telegram-id/${chatId}`) {
+        assert.equal(req.method, 'GET');
+        assert.equal(req.headers['x-bot-token'], 'integration-bot-token');
+        membershipChecks++;
+        res.writeHead(employee ? 200 : 404).end();
+        return;
+      }
       if (path === `/private/invites/${inviteId}/accept`) {
         assert.equal(req.method, 'POST');
         assert.equal(req.headers['x-bot-token'], 'integration-bot-token');
         assert.deepEqual(body, {
-          telegram_id: chatId, username: 'tester', first_name: 'Tester', last_name: null,
+          telegram_id: chatId, username: 'tester', first_name: 'Иван', last_name: null,
         });
         inviteRequests++;
-        res.writeHead(201).end();
+        employee = true;
+        res.destroy();
+        return;
+      }
+      if (path.startsWith('/private/invites/')) {
+        res.writeHead(404).end();
         return;
       }
       if (path.endsWith('/chat/completions')) {
@@ -174,15 +188,32 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
     assert.equal((await send(1, '/start', 'wrong-secret')).status, 401);
     assert.equal((await send(1, '/start')).status, 200);
     assert.equal((await send(1, '/start')).status, 200);
-    await until(() => sent('sendMessage', 'Привет'), 'greeting');
+    await until(() => sent('sendMessage', 'Доступ к боту только для сотрудников'), 'access denied');
     assert.equal((await send(2, `/start@other_bot invite_${inviteId}`)).status, 200);
     await until(async () => !await pending(), 'ignored command for another bot');
     assert.equal(inviteRequests, 0);
     assert.equal((await send(9, '/start invite_invalid')).status, 200);
-    await until(() => sent('sendMessage', 'Некорректная ссылка приглашения'), 'invalid invitation');
+    await until(async () => !await pending(), 'invalid invitation');
+    const missingInvite = '724a62a4-7348-417f-81ce-1734a3d076ff';
+    assert.equal((await send(12, `/start invite_${missingInvite}`)).status, 200);
+    await until(() => sent('sendMessage', 'Введите имя:'), 'name prompt for missing invitation');
+    const initialDenials = calls.filter((call) => call.text?.includes('Доступ к боту')).length;
+    assert.equal((await send(13, 'Иван')).status, 200);
+    await until(() => calls.filter((call) => call.text?.includes('Доступ к боту')).length > initialDenials,
+      'rejected invitation');
+    assert.equal((await send(14, 'Вопрос без доступа')).status, 200);
+    await until(async () => !await pending(), 'ignored non-employee');
+    assert.equal(requests.length, 0);
     assert.equal((await send(10, `/START@Test_Bot invite_${inviteId}`)).status, 200);
     assert.equal((await send(10, `/START@Test_Bot invite_${inviteId}`)).status, 200);
-    await until(() => sent('sendMessage', 'Приглашение принято'), 'accepted invitation');
+    await until(() => calls.filter((call) => call.text === 'Введите имя:').length === 2, 'name prompt');
+    await until(async () => !await pending(), 'saved name step');
+    assert.equal(inviteRequests, 0);
+    await stop();
+    await start();
+    assert.equal((await send(15, 'Иван')).status, 200);
+    assert.equal((await send(15, 'Иван')).status, 200);
+    await until(() => sent('sendMessage', 'Тебя добавили в бота'), 'accepted invitation');
     assert.equal(inviteRequests, 1);
     assert.equal((await send(11, '/unknown')).status, 200);
     await until(async () => !await pending(), 'unknown command');
@@ -221,8 +252,15 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
     assert.equal((await send(8, 'новый вопрос')).status, 200);
     await until(() => sent('sendRichMessage', '**новый вопрос**'), 'new conversation');
     await until(async () => !await pending(), 'final settlement');
-    assert.equal(calls.filter((call) => call.text?.includes('Привет')).length, 1);
+    assert.equal(calls.filter((call) => call.text?.includes('Тебя добавили в бота')).length, 1);
     assert.equal(JSON.stringify(requests.at(-1)).includes('первый'), false);
+    const beforeRevocation = { model: requests.length, telegram: calls.length, membership: membershipChecks };
+    employee = false;
+    assert.equal((await send(16, 'Вопрос после отзыва доступа')).status, 200);
+    await until(async () => !await pending(), 'ignored former employee');
+    assert.equal(membershipChecks, beforeRevocation.membership + 1);
+    assert.equal(requests.length, beforeRevocation.model);
+    assert.equal(calls.length, beforeRevocation.telegram);
   } catch (error) {
     console.error(serverLogs, calls);
     throw error;

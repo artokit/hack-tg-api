@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import type { StateSession } from '@kalutskii/grammy-fsm';
 import type { Pool } from 'pg';
 
 export interface IncomingMessage {
@@ -60,12 +61,34 @@ export class TelegramStore {
     );
   }
 
-  async commandAnswer(sequence: string, text: string): Promise<string> {
+  async session(chatId: string): Promise<StateSession> {
+    const result = await this.pool.query<{ state: StateSession['_state'] }>(
+      'SELECT state FROM bars_telegram_sessions WHERE bot_id = $1 AND chat_id = $2',
+      [this.botId, chatId],
+    );
+    return { _state: result.rows[0]?.state ?? null };
+  }
+
+  async commandAnswer(update: PendingUpdate, text: string, session: StateSession): Promise<string> {
     await this.pool.query(
-      'UPDATE bars_telegram_updates SET command_answer = $2 WHERE sequence = $1',
-      [sequence, text],
+      `WITH saved AS (
+        UPDATE bars_telegram_updates SET command_answer = $2 WHERE sequence = $1
+        RETURNING bot_id, chat_id
+      )
+      INSERT INTO bars_telegram_sessions (bot_id, chat_id, state)
+      SELECT bot_id, chat_id, $3::jsonb FROM saved
+      ON CONFLICT (bot_id, chat_id) DO UPDATE SET state = EXCLUDED.state`,
+      [update.sequence, text, session._state],
     );
     return text;
+  }
+
+  async saveSession(chatId: string, session: StateSession): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO bars_telegram_sessions (bot_id, chat_id, state)
+      VALUES ($1, $2, $3) ON CONFLICT (bot_id, chat_id) DO UPDATE SET state = EXCLUDED.state`,
+      [this.botId, chatId, session._state],
+    );
   }
 
   async reset(update: PendingUpdate, initialId: string): Promise<string> {
@@ -86,6 +109,11 @@ export class TelegramStore {
         SELECT $1, $2, $3 FROM reset_command
         WHERE command_answer = 'Диалог сброшен. Можешь написать новый вопрос.'
         ON CONFLICT (bot_id, chat_id) DO UPDATE SET instance_id = EXCLUDED.instance_id
+        RETURNING chat_id
+      ), cleared AS (
+        DELETE FROM bars_telegram_sessions
+        WHERE bot_id = $1 AND chat_id = $2
+          AND EXISTS (SELECT 1 FROM dialog)
       )
       SELECT command_answer FROM reset_command
     `, [this.botId, update.chat_id, `${initialId}:${randomUUID()}`, update.sequence]);

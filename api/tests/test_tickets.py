@@ -16,8 +16,8 @@ from tickets.jsm import TicketSystemError
 
 def test_migrations_have_one_head():
     scripts = ScriptDirectory.from_config(Config("alembic.ini"))
-    assert scripts.get_heads() == ["0006"]
-    assert len(list(scripts.walk_revisions())) == 6
+    assert scripts.get_heads() == ["0007"]
+    assert len(list(scripts.walk_revisions())) == 7
 
 
 def test_ticket_schema_has_no_external_keys():

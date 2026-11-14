@@ -2,20 +2,16 @@ from uuid import UUID
 
 from config import InviteSettings
 from repositories.invites import InviteRepository
-from schemas.employees import EmployeeCreate
 from schemas.invites import InviteAccept, InviteCreate
-from services.employees import EmployeeService
 
 
 class InviteService:
     def __init__(
         self,
         repository: InviteRepository,
-        employee_service: EmployeeService,
         settings: InviteSettings,
     ):
         self._repository = repository
-        self._employee_service = employee_service
         self._settings = settings
 
     async def create(self, data: InviteCreate):
@@ -56,18 +52,13 @@ class InviteService:
         await self._repository.delete(invite)
 
     async def accept(self, invite_id: UUID, data: InviteAccept):
-        invite = await self.get_by_id(invite_id)
-        employee = await self._employee_service.create(
-            EmployeeCreate(
-                telegram_id=data.telegram_id,
-                first_name=(
-                    invite.first_name if invite.first_name is not None else data.first_name
-                ),
-                last_name=(
-                    invite.last_name if invite.last_name is not None else data.last_name
-                ),
-            ),
-            username=data.username,
+        invite = await self._repository.lock_for_accept(invite_id)
+        if invite is None:
+            raise LookupError("Invite not found")
+        return await self._repository.accept(
+            invite,
+            data.telegram_id,
+            data.username,
+            invite.first_name if invite.first_name is not None else data.first_name,
+            invite.last_name if invite.last_name is not None else data.last_name,
         )
-        await self._repository.consume(invite)
-        return employee
