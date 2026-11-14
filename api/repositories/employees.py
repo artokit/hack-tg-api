@@ -31,11 +31,13 @@ class EmployeeRepository:
         telegram_id: int,
         first_name: str | None,
         last_name: str | None,
+        username: str | None = None,
     ) -> Employee:
         employee = Employee(
             telegram_id=telegram_id,
             first_name=first_name,
             last_name=last_name,
+            username=username,
         )
         self._session.add(employee)
         try:

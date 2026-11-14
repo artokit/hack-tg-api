@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, String, Text, Uuid, func
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, Integer, String, Text, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from db.db import Base
@@ -43,3 +43,19 @@ class Ticket(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class Invite(Base):
+    __tablename__ = "invites"
+    __table_args__ = (
+        CheckConstraint("count_of_use > 0", name="ck_invites_positive_count_of_use"),
+        CheckConstraint(
+            "count_of_use = 1 OR (first_name IS NULL AND last_name IS NULL)",
+            name="ck_invites_single_use_names",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    count_of_use: Mapped[int] = mapped_column(Integer, default=1)
+    first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)

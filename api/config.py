@@ -46,3 +46,12 @@ class AuthSettings(BaseSettings):
 
     jwt_secret: SecretStr = Field(min_length=32)
     jwt_access_token_expire_minutes: int = Field(default=60, ge=1)
+
+
+class InviteSettings(BaseSettings):
+    model_config = DatabaseSettings.model_config
+
+    telegram_bot_username: str | None = Field(
+        default=None, min_length=5, max_length=32, pattern=r"^[A-Za-z][A-Za-z0-9_]*$"
+    )
+    bot_api_token: SecretStr | None = Field(default=None, min_length=32)
