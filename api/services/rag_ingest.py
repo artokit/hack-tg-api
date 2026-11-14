@@ -4,12 +4,16 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from uuid import UUID, uuid4
 
-from models.rag import Block, Chunk, InvalidDocument, RagImport, RagQueueUnavailable, RagUnavailable
+from models.rag import Block, Chunk, DocumentTooLarge, InvalidDocument, RagImport, RagQueueUnavailable, RagUnavailable
 from repositories.rag_extract import extract_blocks, table_blocks, text_blocks
+from repositories.rag_files import MAX_DOCUMENT_BYTES
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
 from repositories.rag_model import RagModel
 from repositories.rag_urls import load_url
+from schemas.confluence import ConfluencePageRead
+from services.confluence import ConfluenceService
+from utils.exceptions import ConfluenceNotConfiguredError, ConfluenceTimeoutError, ConfluenceUnavailableError
 
 
 log = logging.getLogger(__name__)
@@ -70,6 +74,7 @@ class RagIngest:
         self, jobs: RagJobs, index: RagIndex, model: RagModel,
         load: Callable[[RagImport], Awaitable[bytes]], discard_upload: Callable[[UUID], None],
         delete_file: Callable[[UUID], Awaitable[None]],
+        confluence: ConfluenceService,
     ):
         self.jobs = jobs
         self.index = index
@@ -77,6 +82,7 @@ class RagIngest:
         self.load = load
         self.discard_upload = discard_upload
         self.delete_file = delete_file
+        self.confluence = confluence
 
     async def worker(self) -> None:
         next_cleanup = 0.0
@@ -132,16 +138,46 @@ class RagIngest:
             return False
         return True
 
+    async def load_confluence(self, locator: dict[str, str]) -> ConfluencePageRead:
+        try:
+            page = await self.confluence.get_page(locator["space_id"], int(locator["page_id"]))
+        except (KeyError, ValueError) as error:
+            raise InvalidDocument("invalid_source_locator") from error
+        except LookupError as error:
+            raise InvalidDocument("confluence_page_not_found") from error
+        except ConfluenceNotConfiguredError as error:
+            raise RagUnavailable("confluence_not_configured") from error
+        except ConfluenceTimeoutError as error:
+            raise RagUnavailable("confluence_timeout") from error
+        except ConfluenceUnavailableError as error:
+            raise RagUnavailable("confluence_unavailable") from error
+        if page.status != "current":
+            raise InvalidDocument("confluence_page_not_current")
+        return page
+
     async def process(self, job: RagImport) -> None:
         try:
             async with asyncio.timeout(1800):
                 if job.resumed:
                     await self.index.discard(job.version)
-                if job.format == "url" and job.source_url:
+                if job.source_kind == "confluence":
+                    page = await self.load_confluence(job.source_locator or {})
+                    job = replace(job, title=page.title[:250], source_url=page.url, source_revision=str(page.version))
+                    active = await self.jobs.active_source_revision(job.source_id, self.index.key)
+                    if active is not None and page.version <= int(active):
+                        await self.jobs.skip(job)
+                        log.info("RAG import %s skipped Confluence version %d", job.id, page.version)
+                        return
+                    data = page.content_html.encode("utf-8")
+                    if len(data) > MAX_DOCUMENT_BYTES:
+                        raise DocumentTooLarge("document_too_large")
+                elif job.source_kind == "url" and job.source_url:
                     data, format, default_title = await load_url(job.source_url)
                     job = replace(job, title=job.title or default_title[:250], format=format)
-                else:
+                elif job.source_kind == "file":
                     data = await self.load(job)
+                else:
+                    raise InvalidDocument("unsupported_source_kind")
                 blocks = await asyncio.to_thread(extract_blocks, data, job.format)
                 blocks = await self.enrich(blocks)
                 if not blocks:

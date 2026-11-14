@@ -27,6 +27,7 @@ class RagJobs:
     async def enqueue(
         self, job_id: UUID, index_key: str, source_id: str, title: str | None,
         source_url: str | None, format: str, file_id: UUID | None = None, size_bytes: int | None = None,
+        *, source_kind: str, source_locator: dict[str, str] | None = None,
     ) -> None:
         async with self.session(transaction=True) as session:
             await self.lock_source(session, index_key, source_id)
@@ -34,6 +35,7 @@ class RagJobs:
                 id=job_id,
                 index_key=index_key, source_id=source_id, title=title or "", source_url=source_url,
                 format=format, file_id=file_id, size_bytes=size_bytes,
+                source_kind=source_kind, source_locator=source_locator,
             ))
 
     @staticmethod
@@ -43,10 +45,11 @@ class RagJobs:
             {"source": f"rag-source:{index_key}:{source_id}"},
         )
 
-    async def source_for(self, job_id: UUID, index_key: str) -> str | None:
+    async def replaceable_source(self, job_id: UUID, index_key: str) -> str | None:
         async with self.session() as session:
             return await session.scalar(select(RagJob.source_id).where(
                 RagJob.id == job_id, RagJob.index_key == index_key, RagJob.status != "deleting",
+                RagJob.source_kind.in_(("file", "url")),
             ))
 
     @staticmethod
@@ -70,12 +73,15 @@ class RagJobs:
             if job.status == "deleting":
                 self.record_cleanup(job, None, file_id)
                 return False
-            self.record_cleanup(job, job.version, job.file_id, legacy=not job.file_id and not job.source_url)
+            self.record_cleanup(job, job.version, job.file_id, legacy=job.source_kind == "file" and not job.file_id)
             job.title = title
             job.format = format
             job.file_id = file_id
             job.size_bytes = size_bytes
             job.source_url = None
+            job.source_kind = "file"
+            job.source_locator = None
+            job.source_revision = None
             job.status = "queued"
             job.error_code = None
             job.version = None
@@ -106,7 +112,10 @@ class RagJobs:
             for job in jobs:
                 if job.status == "deleting":
                     continue
-                self.record_cleanup(job, job.version, job.file_id, legacy=not job.file_id and not job.source_url)
+                self.record_cleanup(
+                    job, job.version, job.file_id,
+                    legacy=job.source_kind == "file" and not job.file_id,
+                )
                 if job.cleanup:
                     job.status = "deleting"
                     job.cleanup = [{**artifact, "retry_at": None} for artifact in job.cleanup]
@@ -166,7 +175,7 @@ class RagJobs:
     async def list_jobs(self, index_key: str, offset: int, limit: int, include_history: bool):
         scope = (RagJob.index_key == index_key, RagJob.status != "deleting")
         latest = (
-            select(RagJob.id).where(*scope).ext(distinct_on(RagJob.source_id))
+            select(RagJob.id).where(*scope, RagJob.status != "skipped").ext(distinct_on(RagJob.source_id))
             .order_by(RagJob.source_id, RagJob.created_at.desc(), RagJob.id.desc())
         )
         filters = scope if include_history else (RagJob.id.in_(latest),)
@@ -240,8 +249,25 @@ class RagJobs:
             job.version = job.version or version
             job.updated_at = func.now()
             return RagImport(
-                job.id, job.source_id, job.title, job.source_url, job.format, job.version, resumed, job.file_id,
+                job.id, job.source_id, job.title, job.source_url, job.format, job.version, resumed, job.source_kind,
+                file_id=job.file_id, source_locator=job.source_locator, source_revision=job.source_revision,
             )
+
+    async def active_source_revision(self, source_id: str, index_key: str) -> str | None:
+        async with self.session() as session:
+            return await session.scalar(
+                select(RagJob.source_revision)
+                .join(RagDocument, (RagDocument.source_id == RagJob.source_id)
+                      & (RagDocument.index_key == RagJob.index_key) & (RagDocument.active_version == RagJob.version))
+                .where(RagJob.source_id == source_id, RagJob.index_key == index_key)
+            )
+
+    async def skip(self, job: RagImport) -> None:
+        async with self.session(transaction=True) as session:
+            await session.execute(self.finish(job).values(
+                status="skipped", title=job.title, source_url=job.source_url,
+                source_revision=job.source_revision, version=None,
+            ))
 
     async def publish(self, job: RagImport, index_key: str, count: int, size_bytes: int) -> bool:
         async with self.session(transaction=True) as session:
@@ -249,6 +275,7 @@ class RagJobs:
             result = await session.execute(
                 self.finish(job).values(
                     status="succeeded", chunk_count=count, title=job.title, format=job.format, size_bytes=size_bytes,
+                    source_url=job.source_url, source_revision=job.source_revision,
                 ).returning(RagJob.id)
             )
             if result.scalar_one_or_none() is None:
