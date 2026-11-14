@@ -1,0 +1,49 @@
+# Telegram-агент БАРС
+
+Flue принимает Telegram webhook, вызывает OpenAI-совместимую модель и хранит диалоги в PostgreSQL. FastAPI обслуживает регистрацию и поиск пользователей. Простой текст в личном чате идёт агенту. Команды `/start`, `/me <id>` и `/reset` работают без модели. `/reset` открывает новый диалог, предыдущий сохраняется в PostgreSQL.
+
+## Запуск
+
+1. Скопируйте `.env.example` в `.env`. Укажите токен бота в `BOT_TOKEN`, произвольный независимый `TELEGRAM_WEBHOOK_SECRET_TOKEN` и настройки модели. `CHAT_BASE_URL` — базовый URL совместимого API, например `https://provider.example/v1`. При работе без авторизации оставьте `CHAT_API_KEY` пустым.
+2. Выполните `docker compose up -d --build --wait`. FastAPI применит миграцию пользователей, Flue создаст таблицы агента и обработки Telegram. Новый volume называется `bars-hackathon_postgres_flue_data`. На новом запуске пользователи регистрируются заново. Volume прежнего Python-бота можно сохранить для отката.
+3. Проверьте `http://127.0.0.1:3000/health` с хоста. FastAPI доступен внутри Compose по адресу `http://api:8000`. Для второго экземпляра используйте другое имя проекта Compose, другие хостовые порты и отдельный тестовый токен.
+
+## Публичный webhook
+
+Для примера используем `bars-bot.cheremha.ru`. Создайте A-запись `bars-bot` на публичный IPv4 хоста с Compose. Настройте сертификат Let's Encrypt в существующем HTTPS-сервере. Пример маршрута для Nginx внутри HTTPS-блока этого поддомена.
+
+```nginx
+location = /channels/telegram/webhook {
+    limit_except POST { deny all; }
+    proxy_pass http://127.0.0.1:3000;
+}
+
+location / {
+    return 404;
+}
+```
+
+На тестовом токене проверьте доступность TLS и зарегистрируйте webhook. Следующий пример PowerShell предполагает, что `BOT_TOKEN` и `TELEGRAM_WEBHOOK_SECRET_TOKEN` уже загружены из приватной конфигурации в окружение.
+
+```powershell
+$telegramApi = "https://api.telegram.org/bot$env:BOT_TOKEN"
+$body = @{
+    url = "https://bars-bot.cheremha.ru/channels/telegram/webhook"
+    secret_token = $env:TELEGRAM_WEBHOOK_SECRET_TOKEN
+    max_connections = 1
+    allowed_updates = @("message")
+    drop_pending_updates = $false
+} | ConvertTo-Json -Compress
+Invoke-RestMethod "$telegramApi/setWebhook" -Method Post -ContentType "application/json" -Body $body
+Invoke-RestMethod "$telegramApi/getWebhookInfo"
+```
+
+Напишите тестовому боту `/start`, проверьте `/me <id>`, задайте вопрос и отправьте уточнение до готового ответа. После перезапуска Flue убедитесь, что контекст сохраняется. `/reset` открывает диалог с чистым контекстом.
+
+После проверки остановите прежний polling основного бота и зарегистрируйте webhook для его токена. Для отката остановите Flue, вызовите `deleteWebhook` с `drop_pending_updates=false` и запустите предыдущую версию с её БД. Telegram позволяет использовать один способ получения апдейтов на токен.
+
+## Проверки разработки
+
+После `npm ci` в `flue/` выполните `npm run typecheck`, `npm run build` и `npm test`. Для теста реального Flue с подменой Telegram и модели задайте `TEST_FLUE_DATABASE_URL` с URL отдельной PostgreSQL БД. Для теста пользовательского API примените миграции в тестовую БД, задайте `TEST_DATABASE_URL` с префиксом `postgresql+asyncpg://` и запустите `python -m pytest` из `api/`. Для Python-тестов нужны `pytest` и `httpx`.
+
+Процесс Flue рассчитан на одну реплику. Сбой между отправкой в Telegram и подтверждением результата в БД переводит отправку в состояние `unknown`. Запись доступна в `bars_telegram_deliveries`. Такие отправки требуют проверки по журналу и чату, поскольку автоматический повтор может отправить сообщение второй раз.

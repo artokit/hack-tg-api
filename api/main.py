@@ -1,49 +1,40 @@
-from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
-from db.db import get_async_session
-from db.models import User
+from fastapi import FastAPI, HTTPException, Request
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
-app = FastAPI(title="Hackathon API")
-
-
-class UserCreate(BaseModel):
-    telegram_user_id: int
-    username: str | None = None
+from config import DatabaseSettings
+from db.db import create_engine
+from routes import users
+from services.users import UserService
 
 
-class UserRead(UserCreate):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-
-
-@app.post("/users", response_model=UserRead)
-async def create_user(
-    data: UserCreate,
-    session: AsyncSession = Depends(get_async_session),
-):
-    existing = await session.scalar(
-        select(User).where(User.telegram_user_id == data.telegram_user_id)
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    settings = DatabaseSettings()
+    engine = create_engine(settings.database_url.get_secret_value())
+    app.state.engine = engine
+    app.state.user_service = UserService(
+        async_sessionmaker(engine, expire_on_commit=False)
     )
-    if existing is not None:
-        return existing
-
-    user = User(**data.model_dump())
-    session.add(user)
-    await session.commit()
-    await session.refresh(user)
-    return user
+    try:
+        yield
+    finally:
+        await engine.dispose()
 
 
-@app.get("/users/{user_id}", response_model=UserRead)
-async def get_user(
-    user_id: int,
-    session: AsyncSession = Depends(get_async_session),
-):
-    user = await session.get(User, user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    return user
+app = FastAPI(title="БАРС API", lifespan=lifespan)
+app.include_router(users.router)
+
+
+@app.get("/health")
+async def health(request: Request) -> dict[str, str]:
+    try:
+        async with request.app.state.engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+    except SQLAlchemyError:
+        raise HTTPException(503, "Database unavailable") from None
+    return {"status": "ok"}
