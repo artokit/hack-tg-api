@@ -37,7 +37,7 @@ const channel = createTelegramChannel({
   },
 });
 
-export const worker = new TelegramWorker(store, client, httpUrl('API_URL'), (chatId) =>
+export const worker = new TelegramWorker(store, client, (chatId) =>
   botId + ':' + channel.instanceId({ type: 'chat', chatId }),
 );
 

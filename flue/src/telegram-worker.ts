@@ -3,6 +3,7 @@ import { Api } from 'grammy';
 
 import { Bars } from './agents/bars.js';
 import { responseSubmission } from './db.js';
+import { acceptInvite } from './invites-api.js';
 import { TelegramOutput } from './telegram-output.js';
 import { type PendingUpdate, TelegramStore } from './telegram-store.js';
 
@@ -19,7 +20,6 @@ export class TelegramWorker {
   constructor(
     private readonly store: TelegramStore,
     private readonly telegram: Api,
-    private readonly usersApi: string,
     private readonly instanceId: (chatId: number) => string,
   ) {
     this.output = new TelegramOutput(telegram, store);
@@ -130,62 +130,29 @@ export class TelegramWorker {
   }
 
   private async command(update: PendingUpdate): Promise<string> {
-    const { text, userId, username, firstName, lastName } = update.payload;
+    const { text, firstName, lastName } = update.payload;
     const [token, argument] = text.split(/\s+/);
     let answer: string;
     switch (token.split('@')[0].toLowerCase()) {
       case '/reset':
         return await this.store.reset(update, this.instanceId(Number(update.chat_id)));
-      case '/start':
-        try {
-          const existing = await fetch(`${this.usersApi}/users/by-telegram-id/${userId}`, {
-            signal: AbortSignal.timeout(5_000),
-          });
-          if (existing.status === 404) {
-            const response = await fetch(`${this.usersApi}/users`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ telegram_user_id: userId, username: username ?? null }),
-              signal: AbortSignal.timeout(5_000),
-            });
-            if (!response.ok && response.status !== 409) {
-              throw new Error(`Users API status ${response.status}`);
-            }
-          } else if (!existing.ok) {
-            throw new Error(`Users API status ${existing.status}`);
+      case '/start': {
+        if (argument?.startsWith('invite_')) {
+          const id = argument.slice('invite_'.length);
+          if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+            answer = 'Некорректная ссылка приглашения.';
+          } else {
+            answer = await acceptInvite(id, update.payload);
           }
-          const name = [firstName, lastName].filter(Boolean).join(' ');
-          answer = `Привет, ${name}!\nНапиши свой вопрос. Чтобы начать новый диалог, отправь /reset.`;
-        } catch {
-          answer = 'Сейчас не получается зарегистрироваться. Попробуй чуть позже.';
+          break;
         }
+        const name = [firstName, lastName].filter(Boolean).join(' ');
+        answer = `Привет, ${name}!\nНапиши свой вопрос. Чтобы начать новый диалог, отправь /reset.`;
         break;
-      case '/me':
-        answer = await this.lookupUser(argument);
-        break;
+      }
       default:
         answer = '';
     }
     return await this.store.commandAnswer(update.sequence, answer);
-  }
-
-  private async lookupUser(argument: string | undefined): Promise<string> {
-    if (!argument || !/^\d{1,10}$/.test(argument)) return 'Укажи id: /me <id>';
-    const id = Number(argument);
-    try {
-      const response = await fetch(`${this.usersApi}/users/${id}`, {
-        signal: AbortSignal.timeout(5_000),
-      });
-      if (response.status === 404) return `Пользователь с id ${id} не найден`;
-      if (!response.ok) throw new Error(`Users API status ${response.status}`);
-      const user = await response.json() as {
-        id: number;
-        telegram_user_id: number;
-        username: string | null;
-      };
-      return `id: ${user.id}\ntelegram_user_id: ${user.telegram_user_id}\nusername: ${user.username || '—'}`;
-    } catch {
-      return 'Сейчас не получается получить пользователя. Попробуй чуть позже.';
-    }
   }
 }

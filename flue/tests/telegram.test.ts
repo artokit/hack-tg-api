@@ -48,7 +48,6 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
   const secret = 'integration-secret';
   const calls: { method: string; text?: string }[] = [];
   const requests: { messages: { role: string; content: unknown }[] }[] = [];
-  const users = new Set<number>();
   let authorization: string | undefined;
   let releaseModel: (() => void) | undefined;
   let blockModel = false;
@@ -61,29 +60,6 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
       const chunks = [];
       for await (const chunk of req) chunks.push(chunk);
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {};
-      if (path.startsWith('/users/by-telegram-id/') && req.method === 'GET') {
-        const telegramUserId = Number(path.split('/').at(-1));
-        if (!users.has(telegramUserId)) {
-          res.writeHead(404).end();
-          return;
-        }
-        res.end(JSON.stringify({ id: 1, telegram_user_id: telegramUserId, username: 'tester' }));
-        return;
-      }
-      if (path === '/users' && req.method === 'POST') {
-        if (users.has(body.telegram_user_id)) {
-          res.writeHead(409).end();
-          return;
-        }
-        users.add(body.telegram_user_id);
-        res.writeHead(201);
-        res.end(JSON.stringify({ id: 1, ...body }));
-        return;
-      }
-      if (path === '/users/1') {
-        res.end(JSON.stringify({ id: 1, telegram_user_id: chatId, username: 'tester' }));
-        return;
-      }
       if (path.endsWith('/chat/completions')) {
         authorization = req.headers.authorization;
         requests.push(body);
@@ -138,7 +114,6 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
           TELEGRAM_API_ROOT: mockUrl,
           FLUE_DATABASE_URL: connectionString,
           PORT: new URL(appUrl).port,
-          API_URL: mockUrl,
           CHAT_BASE_URL: `${mockUrl}/v1`,
           CHAT_API_KEY: '',
           CHAT_MODEL: 'test',
@@ -185,10 +160,7 @@ test('verified Telegram webhook, response steering, durable delivery and reset',
     assert.equal((await send(1, '/start', 'wrong-secret')).status, 401);
     assert.equal((await send(1, '/start')).status, 200);
     assert.equal((await send(1, '/start')).status, 200);
-    await until(() => sent('sendMessage', 'Привет'), 'registration');
-    assert.equal(users.size, 1);
-    assert.equal((await send(2, '/me 1')).status, 200);
-    await until(() => sent('sendMessage', 'username: tester'), 'user lookup');
+    await until(() => sent('sendMessage', 'Привет'), 'greeting');
     assert.equal(requests.length, 0);
 
     blockModel = true;
