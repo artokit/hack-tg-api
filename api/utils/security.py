@@ -18,11 +18,11 @@ def verify_password(password: str, hashed_password: str) -> bool:
         return False
 
 
-def create_access_token(admin_id: UUID, secret: str, expire_minutes: int) -> str:
+def create_access_token(user_id: UUID, secret: str, expire_minutes: int) -> str:
     now = datetime.now(timezone.utc)
     return jwt.encode(
         {
-            "sub": str(admin_id),
+            "sub": str(user_id),
             "iat": now,
             "exp": now + timedelta(minutes=expire_minutes),
         },
@@ -31,7 +31,7 @@ def create_access_token(admin_id: UUID, secret: str, expire_minutes: int) -> str
     )
 
 
-def get_token_admin_id(token: str, secret: str) -> UUID:
+def get_token_user_id(token: str, secret: str) -> UUID:
     try:
         payload = jwt.decode(
             token,

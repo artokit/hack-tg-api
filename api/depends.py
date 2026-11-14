@@ -5,18 +5,14 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import AuthSettings
-from repositories.admins import AdminRepository
 from repositories.employees import EmployeeRepository
 from repositories.health import HealthRepository
-from repositories.tickets import TicketRepository
 from repositories.users import UserRepository
 from services.auth import AuthService
 from services.employees import EmployeeService
 from services.health import HealthService
-from services.tickets import TicketService
-from services.users import UserService
 
-bearer_scheme = HTTPBearer(scheme_name="AdminJWT", bearerFormat="JWT", auto_error=False)
+bearer_scheme = HTTPBearer(scheme_name="UserJWT", bearerFormat="JWT", auto_error=False)
 
 
 async def get_async_session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -32,10 +28,10 @@ def get_auth_service(
     session: AsyncSession = Depends(get_async_session),
     settings: AuthSettings = Depends(get_auth_settings),
 ) -> AuthService:
-    return AuthService(AdminRepository(session), settings)
+    return AuthService(UserRepository(session), settings)
 
 
-async def get_current_admin(
+async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     service: AuthService = Depends(get_auth_service),
 ):
@@ -46,7 +42,7 @@ async def get_current_admin(
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        return await service.get_current_admin(credentials.credentials)
+        return await service.get_current_user(credentials.credentials)
     except PermissionError as error:
         raise HTTPException(
             status_code=401,
@@ -55,16 +51,8 @@ async def get_current_admin(
         ) from error
 
 
-def get_user_service(session: AsyncSession = Depends(get_async_session)) -> UserService:
-    return UserService(UserRepository(session))
-
-
 def get_health_service(session: AsyncSession = Depends(get_async_session)) -> HealthService:
     return HealthService(HealthRepository(session))
-
-
-def get_ticket_service(session: AsyncSession = Depends(get_async_session)) -> TicketService:
-    return TicketService(TicketRepository(session))
 
 
 def get_employee_service(
