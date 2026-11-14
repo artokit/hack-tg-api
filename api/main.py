@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from config import DatabaseSettings
 from db.db import create_engine
-from routes import users
+from routes import tickets, users
 from services.users import UserService
 
 
@@ -28,6 +28,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="БАРС API", lifespan=lifespan)
 app.include_router(users.router)
+app.include_router(tickets.router)
 
 
 @app.get("/health")

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from alembic import context
 from config import DatabaseSettings
 from db.db import Base
-from models import users  # noqa: F401
+from models import tickets, users  # noqa: F401
 
 config = context.config
 database_url = DatabaseSettings().database_url.get_secret_value()
