@@ -34,6 +34,8 @@ async def get_user(
     user_id: int,
     service: UserService = Depends(get_user_service),
 ):
+    if not -(2**31) <= user_id < 2**31:
+        raise HTTPException(status_code=404, detail="User not found")
     user = await service.get_by_id(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")

@@ -1,21 +1,63 @@
+name: bars-hackathon
+
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: app
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_flue_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
       interval: 5s
       timeout: 5s
       retries: 10
 
+  api:
+    build: ./api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  flue:
+    build: ./flue
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      FLUE_DATABASE_URL: postgresql://postgres:postgres@postgres:5432/app
+      API_URL: http://api:8000
+      BOT_TOKEN: ${BOT_TOKEN:-}
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: ${TELEGRAM_WEBHOOK_SECRET_TOKEN:-}
+      CHAT_BASE_URL: ${CHAT_BASE_URL:-}
+      CHAT_MODEL: ${CHAT_MODEL:-}
+      CHAT_API_KEY: ${CHAT_API_KEY:-}
+      CHAT_CONTEXT_WINDOW: ${CHAT_CONTEXT_WINDOW:-8192}
+    ports:
+      - "127.0.0.1:${FLUE_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exitCode=1}).catch(()=>{process.exitCode=1})"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
 volumes:
-  postgres_data:
+  postgres_flue_data:
