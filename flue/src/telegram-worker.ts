@@ -138,13 +138,22 @@ export class TelegramWorker {
         return await this.store.reset(update, this.instanceId(Number(update.chat_id)));
       case '/start':
         try {
-          const response = await fetch(`${this.usersApi}/users`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ telegram_user_id: userId, username: username ?? null }),
+          const existing = await fetch(`${this.usersApi}/users/by-telegram-id/${userId}`, {
             signal: AbortSignal.timeout(5_000),
           });
-          if (!response.ok) throw new Error(`Users API status ${response.status}`);
+          if (existing.status === 404) {
+            const response = await fetch(`${this.usersApi}/users`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ telegram_user_id: userId, username: username ?? null }),
+              signal: AbortSignal.timeout(5_000),
+            });
+            if (!response.ok && response.status !== 409) {
+              throw new Error(`Users API status ${response.status}`);
+            }
+          } else if (!existing.ok) {
+            throw new Error(`Users API status ${existing.status}`);
+          }
           const name = [firstName, lastName].filter(Boolean).join(' ');
           answer = `Привет, ${name}!\nНапиши свой вопрос. Чтобы начать новый диалог, отправь /reset.`;
         } catch {

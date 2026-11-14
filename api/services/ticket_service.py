@@ -1,23 +1,19 @@
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from config import TICKET_ROUTES
-from models.tickets import Ticket
+from db.models import Ticket
+from repositories.tickets import TicketRepository
 from schemas.ticket import TicketCreate
 from tickets.base import TicketRequest
 from tickets.registry import build_adapter
 
 
 class TicketService:
-    """Бизнес-слой: создаёт заявку у себя и синхронизирует с тикет-системой.
+    def __init__(self, repository: TicketRepository):
+        self._repository = repository
 
-    Не знает, какая система под капотом — работает через контракт TicketSystem.
-    """
-
-    async def create(self, session: AsyncSession, data: TicketCreate) -> Ticket:
+    async def create(self, data: TicketCreate) -> Ticket:
         route = TICKET_ROUTES.get(data.category) or TICKET_ROUTES["default"]
         adapter = build_adapter(route)
 
-        # Сохраняем локальную запись после успешного создания в тикет-системе.
         req = TicketRequest(
             title=data.title,
             description=data.description,
@@ -32,10 +28,4 @@ class TicketService:
             system=route["system"],
             status="created",
         )
-        session.add(ticket)
-        await session.commit()
-        await session.refresh(ticket)
-        return ticket
-
-
-service = TicketService()
+        return await self._repository.create(ticket)

@@ -1,41 +1,22 @@
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+import uvicorn
+from fastapi import FastAPI
 
-from fastapi import FastAPI, HTTPException, Request
-from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import async_sessionmaker
+from lifespan import lifespan
+from routes.auth import router as auth_router
+from routes.employees import router as employees_router
+from routes.health import router as health_router
+from routes.tickets import router as tickets_router
 
-from config import DatabaseSettings
-from db.db import create_engine
-from routes import tickets, users
-from services.users import UserService
+app = FastAPI(
+    title="БАРС API",
+    lifespan=lifespan,
+    docs_url="/docs",
+    openapi_url="/openapi.json",
+)
+app.include_router(auth_router)
+app.include_router(health_router)
+app.include_router(employees_router)
+app.include_router(tickets_router)
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    settings = DatabaseSettings()
-    engine = create_engine(settings.database_url.get_secret_value())
-    app.state.engine = engine
-    app.state.user_service = UserService(
-        async_sessionmaker(engine, expire_on_commit=False)
-    )
-    try:
-        yield
-    finally:
-        await engine.dispose()
-
-
-app = FastAPI(title="БАРС API", lifespan=lifespan)
-app.include_router(users.router)
-app.include_router(tickets.router)
-
-
-@app.get("/health")
-async def health(request: Request) -> dict[str, str]:
-    try:
-        async with request.app.state.engine.connect() as connection:
-            await connection.execute(text("SELECT 1"))
-    except SQLAlchemyError:
-        raise HTTPException(503, "Database unavailable") from None
-    return {"status": "ok"}
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
