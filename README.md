@@ -103,6 +103,21 @@ location = /flue/channels/confluence/webhook {
 
 В Docker Compose Redis запускается автоматически. Для локальной разработки выполните `docker compose -f docker-compose-dev.yml up -d redis`; API по умолчанию использует `redis://127.0.0.1:6379/0`. Другой адрес можно задать через `REDIS_URL`; порт Redis в dev-compose — через `REDIS_PORT`.
 
+## Редактирование ФИ сотрудника
+
+`PATCH /employees/{employee_id}` требует JWT администратора в заголовке `Authorization: Bearer <access_token>`. `employee_id` — UUID сотрудника из списка `/employees`.
+
+```json
+{
+  "first_name": "Иван",
+  "last_name": "Иванов"
+}
+```
+
+Можно передать только одно поле: отсутствующее останется без изменений, а `null` очистит значение. Максимальная длина каждого поля — 255 символов. Пустое тело `{}`, посторонние поля и некорректный UUID возвращают `422`. `telegram_id`, `username`, `is_parsed` и дата создания не меняются.
+
+Успех — `200` с обновлённым `EmployeeRead`; неизвестный сотрудник — `404`, недоступный Redis — `503`. Кэш обновляется сразу под той же блокировкой, что чтение, удаление и обновление данных из Telegram.
+
 ## Данные сотрудника из Telegram
 
 Миграция `0008` добавляет `employees.is_parsed` со значением `false` по умолчанию, в том числе для существующих сотрудников. `POST /employees` создаёт сотрудника с `is_parsed: false`. При первом сообщении бот читает этот флаг и, если данные ещё не получены, вызывает `PATCH /private/employees/by-telegram-id/{telegram_id}` с `X-Bot-Token`.
