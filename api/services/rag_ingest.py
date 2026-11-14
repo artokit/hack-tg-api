@@ -148,11 +148,13 @@ class RagIngest:
                 replace(part, kind=block.kind)
                 for part in text_blocks(visual["text"], **location)
             ]
-            if visual["rows"]:
-                if not visual["columns"] or any(len(row["cells"]) != len(visual["columns"]) for row in visual["rows"]):
-                    raise InvalidDocument("unreadable_visual")
+            columns = visual["columns"]
+            rows = [row["cells"] for row in visual["rows"] if columns and len(row["cells"]) == len(columns)]
+            if len(rows) != len(visual["rows"]):
+                log.warning("RAG skipped malformed visual table rows on page %s", block.page)
+            if rows:
                 parsed.extend(table_blocks(
-                    [visual["columns"], *(row["cells"] for row in visual["rows"])],
+                    [columns, *rows],
                     block.table_id or f"vision:{index}",
                     **location,
                 ))
@@ -160,8 +162,10 @@ class RagIngest:
                     replace(part, kind=block.kind)
                     for part in parsed
                 ]
-            if not parsed and (block.kind == "scan" or block.table_id):
+            if not parsed and block.kind == "scan":
                 raise InvalidDocument("unreadable_visual")
+            if not parsed and block.table_id:
+                log.warning("RAG skipped an unreadable table on page %s", block.page)
             return parsed
 
         output = []
