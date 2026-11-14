@@ -139,10 +139,8 @@ class RagIngest:
         self.discard_upload(job.id)
 
     async def enrich(self, blocks: list[Block]) -> list[Block]:
-        async def read(index: int, block: Block) -> list[Block]:
-            if block.image is None:
-                return [block]
-            visual = await self.model.read_visual(block.image, block.kind, block.label)
+        async def read(index: int, block: Block, image: bytes) -> list[Block]:
+            visual = await self.model.read_visual(image, block.kind, block.label)
             location = {"page": block.page, "box": block.box, "section": block.section, "label": block.label}
             parsed = [
                 replace(part, kind=block.kind)
@@ -168,17 +166,22 @@ class RagIngest:
                 log.warning("RAG skipped an unreadable table on page %s", block.page)
             return parsed
 
-        output = []
-        for start in range(0, len(blocks), 8):
-            results = await asyncio.gather(
-                *(read(index, block) for index, block in enumerate(blocks[start:start + 8], start)),
-                return_exceptions=True,
-            )
-            for result in results:
-                if isinstance(result, BaseException):
-                    raise result
-                output.extend(result)
-        return output
+        pending = {
+            index: asyncio.create_task(read(index, block, block.image))
+            for index, block in enumerate(blocks) if block.image is not None
+        }
+        try:
+            await asyncio.gather(*pending.values())
+        except (Exception, asyncio.CancelledError):
+            for task in pending.values():
+                task.cancel()
+            await asyncio.gather(*pending.values(), return_exceptions=True)
+            raise
+        return [
+            part
+            for index, block in enumerate(blocks)
+            for part in (pending[index].result() if index in pending else [block])
+        ]
 
     async def chunk(self, blocks: list[Block]) -> list[Chunk]:
         start = 0

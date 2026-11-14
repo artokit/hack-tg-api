@@ -13,10 +13,10 @@ class RagModel:
         self.slots = asyncio.Semaphore(8)
 
     async def run(self, operation: str, data: dict, image: bytes | None = None) -> dict:
-        request = {"operation": operation, "data": data}
-        if image is not None:
-            request["image"] = b64encode(image).decode("ascii")
         async with self.slots:
+            request = {"operation": operation, "data": data}
+            if image is not None:
+                request["image"] = b64encode(image).decode("ascii")
             for attempt in range(2):
                 try:
                     response = await self.http.post(self.url, json=request, headers=self.headers, timeout=22)
