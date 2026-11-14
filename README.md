@@ -79,8 +79,10 @@ Invoke-RestMethod "$telegramApi/getWebhookInfo"
 сохраняет готовые ответы с выбранными цитатами.
 Тулза ищет фрагменты через FastAPI, выбирает ответ и цитаты одним вызовом модели Flue,
 затем сверяет идентификаторы источников и точный текст цитат.
-FastAPI строит эмбеддинги Qwen3 Embedding 8B через `CHAT_BASE_URL` и хранит фрагменты в Qdrant.
-Провайдер должен поддерживать изображения в `/chat/completions` и Qwen в `/embeddings`.
+FastAPI строит эмбеддинги Qwen3 Embedding 8B через `EMBEDDING_BASE_URL` и
+`EMBEDDING_API_KEY` и хранит фрагменты в Qdrant. Для OpenRouter задайте
+`EMBEDDING_BASE_URL=https://openrouter.ai/api/v1`. API добавляет путь `/embeddings`.
+Flue берёт адрес и ключ для чата и Vision из `CHAT_BASE_URL` и `CHAT_API_KEY`.
 В Telegram тулза доступна зарегистрированным сотрудникам.
 
 - `POST /rag/documents` принимает multipart поля `file`, `source_id`, `title` и

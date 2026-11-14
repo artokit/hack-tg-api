@@ -57,8 +57,8 @@ class InviteSettings(BaseSettings):
     bot_api_token: SecretStr | None = Field(default=None, min_length=32)
 
 
-class ChatSettings(BaseSettings):
+class EmbeddingSettings(BaseSettings):
     model_config = DatabaseSettings.model_config
 
-    chat_base_url: AnyHttpUrl | None = None
-    chat_api_key: SecretStr | None = None
+    embedding_base_url: AnyHttpUrl | None = None
+    embedding_api_key: SecretStr | None = None

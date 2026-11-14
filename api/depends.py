@@ -95,7 +95,7 @@ def require_bot_token(
 
 def get_rag_service(request: Request) -> RagService:
     if request.app.state.rag_service is None:
-        raise HTTPException(status_code=503, detail="Chat provider is not configured")
+        raise HTTPException(status_code=503, detail="Embedding provider is not configured")
     return request.app.state.rag_service
 
 
