@@ -1,11 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from depends import get_current_admin, get_employee_service
+from depends import get_current_user, get_employee_service
 from schemas.employees import EmployeeCreate, EmployeePage, EmployeeRead
 from services.employees import EmployeeService
 
-router = APIRouter(tags=["employees"])
-private_router = APIRouter(prefix="/private", tags=["employees"])
+router = APIRouter(tags=["employees"], dependencies=[Depends(get_current_user)])
 
 
 @router.get("/employees", response_model=EmployeePage)
@@ -21,7 +20,6 @@ async def get_employees(
     "/employees",
     response_model=EmployeeRead,
     status_code=201,
-    dependencies=[Depends(get_current_admin)],
 )
 async def create_employee(
     data: EmployeeCreate,
@@ -33,7 +31,7 @@ async def create_employee(
         raise HTTPException(status_code=409, detail="Employee already exists") from error
 
 
-@private_router.get(
+@router.get(
     "/employees/by-telegram-id/{telegram_id}", response_model=EmployeeRead
 )
 async def get_employee_by_telegram_id(
