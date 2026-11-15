@@ -5,12 +5,15 @@ import httpx
 from models.rag import RagUnavailable
 
 
+RAG_MODEL_CONCURRENCY = 8
+
+
 class RagModel:
     def __init__(self, http: httpx.AsyncClient, token: str | None, *, url: str = "http://flue:3000"):
         self.http = http
         self.url = url.rstrip("/") + "/internal/rag/model"
         self.headers = {"X-Bot-Token": token} if token else {}
-        self.slots = asyncio.Semaphore(8)
+        self.slots = asyncio.Semaphore(RAG_MODEL_CONCURRENCY)
 
     async def run(self, operation: str, data: dict, image: bytes | None = None) -> dict:
         async with self.slots:

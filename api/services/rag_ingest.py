@@ -10,7 +10,7 @@ from repositories.rag_extract import extract_blocks, table_blocks, text_blocks
 from repositories.rag_files import MAX_DOCUMENT_BYTES, RagFiles
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
-from repositories.rag_model import RagModel
+from repositories.rag_model import RAG_MODEL_CONCURRENCY, RagModel
 from repositories.rag_urls import load_url
 from schemas.confluence import ConfluencePageRead
 from services.confluence import ConfluenceService
@@ -93,27 +93,52 @@ class RagIngest:
             try:
                 async with self.jobs.worker_lock(self.index.key) as locked:
                     if locked:
-                        while True:
-                            await self.github.sync_pending()
-                            now = asyncio.get_running_loop().time()
-                            if now >= next_cleanup:
-                                await self.purge_artifacts()
-                                await self.purge_retired()
-                                next_cleanup = now + 30
-                            job = await self.jobs.claim(str(uuid4()), self.index.key)
-                            if job is None:
-                                break
-                            await self.process(job)
+                        next_cleanup = await self.drain_queue(next_cleanup)
             except RagQueueUnavailable as error:
                 log.warning("RAG queue unavailable (%s)", type(error).__name__)
             await asyncio.sleep(1)
 
-    async def purge_retired(self) -> None:
-        for job_id, version in await self.jobs.retired(self.index.key):
+    async def drain_queue(self, next_cleanup: float) -> float:
+        running: dict[asyncio.Task[None], str] = {}
+        async with asyncio.TaskGroup() as tasks:
+            while True:
+                try:
+                    await self.github.sync_pending()
+                    now = asyncio.get_running_loop().time()
+                    if now >= next_cleanup:
+                        active_sources = list(running.values())
+                        await self.purge_artifacts(active_sources)
+                        await self.purge_retired(active_sources)
+                        next_cleanup = now + 30
+                    while len(running) < 2:
+                        job = await self.jobs.claim(str(uuid4()), self.index.key, list(running.values()))
+                        if job is None:
+                            break
+                        running[tasks.create_task(self.process_job(job))] = job.source_id
+                except RagQueueUnavailable as error:
+                    log.warning("RAG queue unavailable (%s)", type(error).__name__)
+                    await asyncio.sleep(1)
+                if not running:
+                    return next_cleanup
+                done, _ = await asyncio.wait(
+                    running, return_when=asyncio.FIRST_COMPLETED, timeout=1 if len(running) < 2 else None,
+                )
+                for task in done:
+                    del running[task]
+
+    async def process_job(self, job: RagImport) -> None:
+        try:
+            await self.process(job)
+        except RagQueueUnavailable as error:
+            log.warning("RAG import %s interrupted (%s)", job.id, type(error).__name__)
+            await asyncio.sleep(1)
+
+    async def purge_retired(self, active_sources: list[str]) -> None:
+        for job_id, version in await self.jobs.retired(self.index.key, active_sources):
             if await self.discard(version):
                 await self.jobs.mark_purged(job_id, version)
 
-    async def purge_artifacts(self) -> None:
+    async def purge_artifacts(self, active_sources: list[str]) -> None:
         async def purge(job_id: UUID, deleting: bool, artifact: dict) -> None:
             version = artifact["version"]
             file_id = artifact["file_id"]
@@ -128,7 +153,7 @@ class RagIngest:
                 self.discard_upload(job_id)
             await self.jobs.finish_cleanup(job_id, artifact, deleting=deleting, success=success)
 
-        rows = await self.jobs.cleanup_candidates(self.index.key)
+        rows = await self.jobs.cleanup_candidates(self.index.key, active_sources)
         results = await asyncio.gather(*(purge(**row) for row in rows), return_exceptions=True)
         for result in results:
             if isinstance(result, BaseException):
@@ -259,21 +284,29 @@ class RagIngest:
                 log.warning("RAG skipped an unreadable table on page %s", block.page)
             return [replace(part, image_file_id=block.image_file_id) for part in parsed]
 
-        pending = {
-            index: asyncio.create_task(read(index, block, block.image))
+        images = [
+            (index, block, block.image)
             for index, block in enumerate(blocks) if block.image is not None
-        }
+        ]
+        remaining = iter(images)
+        parsed: dict[int, list[Block]] = {}
+
+        async def read_images() -> None:
+            for index, block, image in remaining:
+                parsed[index] = await read(index, block, image)
+
+        pending = [asyncio.create_task(read_images()) for _ in range(min(len(images), RAG_MODEL_CONCURRENCY))]
         try:
-            await asyncio.gather(*pending.values())
+            await asyncio.gather(*pending)
         except (Exception, asyncio.CancelledError):
-            for task in pending.values():
+            for task in pending:
                 task.cancel()
-            await asyncio.gather(*pending.values(), return_exceptions=True)
+            await asyncio.gather(*pending, return_exceptions=True)
             raise
         return [
             part
             for index, block in enumerate(blocks)
-            for part in (pending[index].result() if index in pending else [block])
+            for part in (parsed[index] if index in parsed else [block])
         ]
 
     async def chunk(self, blocks: list[Block]) -> list[Chunk]:
