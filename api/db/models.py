@@ -6,6 +6,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Index,
     Integer,
     String,
@@ -45,6 +46,19 @@ class Employee(Base):
     )
 
 
+class SupportRequest(Base):
+    __tablename__ = "support_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    instance_id: Mapped[str] = mapped_column(Text, unique=True)
+    telegram_chat_id: Mapped[int] = mapped_column(BigInteger)
+    category_id: Mapped[str | None] = mapped_column(String(100))
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    is_resolved: Mapped[bool | None] = mapped_column(Boolean)
+    close_reason: Mapped[str] = mapped_column(String(40))
+
+
 class Ticket(Base):
     __tablename__ = "tickets"
 
@@ -55,6 +69,12 @@ class Ticket(Base):
     author_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     system: Mapped[str] = mapped_column(String(50))
     status: Mapped[str] = mapped_column(String(50), default="created")
+    support_request_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("support_requests.id"), unique=True,
+    )
+    external_key: Mapped[str | None] = mapped_column(String(100))
+    conversation: Mapped[str | None] = mapped_column(Text)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

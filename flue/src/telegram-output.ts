@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { Api, GrammyError } from 'grammy';
 
-import type { TelegramStore } from './telegram-store.js';
+import type { DeliveryReceipt, TelegramStore } from './telegram-store.js';
 
 export function splitReply(text: string): string[] {
   const parts: string[] = [];
@@ -68,15 +68,16 @@ export class TelegramOutput {
     }
   }
 
-  async send(id: string, chatId: string, text: string, markdown: boolean, html?: string): Promise<void> {
-    if (!await this.store.claimDelivery(id)) return;
+  async send(
+    id: string, chatId: string, text: string, markdown: boolean, html?: string,
+  ): Promise<DeliveryReceipt> {
+    if (!await this.store.claimDelivery(id)) return this.store.delivery(id);
     let status: 'sent' | 'failed' | 'unknown';
     try {
       if (html || markdown) {
         try {
           await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }));
-          await this.store.recordDelivery(id, 'sent');
-          return;
+          return await this.store.recordDelivery(id, 'sent');
         } catch (error) {
           if (!(error instanceof GrammyError) || error.error_code !== 400) throw error;
         }
@@ -89,6 +90,6 @@ export class TelegramOutput {
       status = error instanceof GrammyError && error.error_code < 500 ? 'failed' : 'unknown';
       console.warn('Telegram delivery', status, id, error instanceof Error ? error.name : 'Error');
     }
-    await this.store.recordDelivery(id, status);
+    return this.store.recordDelivery(id, status);
   }
 }

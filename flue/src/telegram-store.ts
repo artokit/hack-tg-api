@@ -1,7 +1,6 @@
-import { randomUUID } from 'node:crypto';
-
 import type { StateSession } from '@kalutskii/grammy-fsm';
 import type { Pool } from 'pg';
+import type { RequestPhase } from './telegram-requests.js';
 
 export interface IncomingMessage {
   text: string;
@@ -19,7 +18,17 @@ export interface PendingUpdate {
   instance_id: string | null;
   submission_id: string | null;
   command_answer: string | null;
+  request_id: string | null;
+  request_phase: RequestPhase | null;
+  received_at: Date;
 }
+
+export interface DeliveryReceipt {
+  status: 'sending' | 'sent' | 'failed' | 'unknown';
+  sent_at: Date | null;
+}
+
+export const resetAnswer = 'Диалог сброшен. Можешь написать новый вопрос.';
 
 export class TelegramStore {
   constructor(private readonly pool: Pool, private readonly botId: string) {}
@@ -33,25 +42,11 @@ export class TelegramStore {
 
   async pending(): Promise<PendingUpdate[]> {
     const result = await this.pool.query<PendingUpdate>(`
-      SELECT sequence, update_id, chat_id, payload, instance_id, submission_id, command_answer
+      SELECT sequence, update_id, chat_id, payload, instance_id, submission_id, command_answer,
+        request_id, request_phase, received_at
       FROM bars_telegram_updates WHERE bot_id = $1 AND finished_at IS NULL ORDER BY sequence
     `, [this.botId]);
     return result.rows;
-  }
-
-  async pinInstance(update: PendingUpdate, initialId: string): Promise<string> {
-    if (update.instance_id !== null) return update.instance_id;
-    const result = await this.pool.query<{ instance_id: string }>(`
-      WITH dialog AS (
-        INSERT INTO bars_telegram_dialogs (bot_id, chat_id, instance_id)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (bot_id, chat_id) DO UPDATE SET chat_id = EXCLUDED.chat_id
-        RETURNING instance_id
-      )
-      UPDATE bars_telegram_updates SET instance_id = dialog.instance_id
-      FROM dialog WHERE sequence = $4 RETURNING bars_telegram_updates.instance_id
-    `, [this.botId, update.chat_id, initialId, update.sequence]);
-    return result.rows[0].instance_id;
   }
 
   async recordSubmission(sequence: string, id: string): Promise<void> {
@@ -91,35 +86,6 @@ export class TelegramStore {
     );
   }
 
-  async reset(update: PendingUpdate, initialId: string): Promise<string> {
-    const result = await this.pool.query<{ command_answer: string }>(`
-      WITH reset_command AS (
-        UPDATE bars_telegram_updates AS current
-        SET command_answer = CASE WHEN EXISTS (
-          SELECT 1 FROM bars_telegram_updates AS previous
-          WHERE previous.bot_id = current.bot_id AND previous.chat_id = current.chat_id
-            AND previous.finished_at IS NULL AND previous.submission_id IS NOT NULL
-        ) THEN 'Я ещё отвечаю на предыдущий вопрос. Попробуй чуть позже.'
-          ELSE 'Диалог сброшен. Можешь написать новый вопрос.'
-        END
-        WHERE current.sequence = $4 AND current.command_answer IS NULL
-        RETURNING command_answer
-      ), dialog AS (
-        INSERT INTO bars_telegram_dialogs (bot_id, chat_id, instance_id)
-        SELECT $1, $2, $3 FROM reset_command
-        WHERE command_answer = 'Диалог сброшен. Можешь написать новый вопрос.'
-        ON CONFLICT (bot_id, chat_id) DO UPDATE SET instance_id = EXCLUDED.instance_id
-        RETURNING chat_id
-      ), cleared AS (
-        DELETE FROM bars_telegram_sessions
-        WHERE bot_id = $1 AND chat_id = $2
-          AND EXISTS (SELECT 1 FROM dialog)
-      )
-      SELECT command_answer FROM reset_command
-    `, [this.botId, update.chat_id, `${initialId}:${randomUUID()}`, update.sequence]);
-    return result.rows[0].command_answer;
-  }
-
   async finish(sequence: string): Promise<void> {
     await this.pool.query(`
       UPDATE bars_telegram_updates
@@ -144,9 +110,19 @@ export class TelegramStore {
     return result.rowCount === 1;
   }
 
-  async recordDelivery(id: string, status: 'sent' | 'failed' | 'unknown'): Promise<void> {
-    await this.pool.query(`
-      UPDATE bars_telegram_deliveries SET status = $3 WHERE bot_id = $1 AND delivery_id = $2
+  async delivery(id: string): Promise<DeliveryReceipt> {
+    const result = await this.pool.query<DeliveryReceipt>(`
+      SELECT status, sent_at FROM bars_telegram_deliveries WHERE bot_id = $1 AND delivery_id = $2
+    `, [this.botId, id]);
+    return result.rows[0];
+  }
+
+  async recordDelivery(id: string, status: 'sent' | 'failed' | 'unknown'): Promise<DeliveryReceipt> {
+    const result = await this.pool.query<DeliveryReceipt>(`
+      UPDATE bars_telegram_deliveries SET status = $3,
+        sent_at = CASE WHEN $3 = 'sent' THEN clock_timestamp() END
+      WHERE bot_id = $1 AND delivery_id = $2 RETURNING status, sent_at
     `, [this.botId, id, status]);
+    return result.rows[0];
   }
 }

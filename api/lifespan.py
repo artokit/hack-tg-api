@@ -31,6 +31,7 @@ from repositories.rag_uploads import RagUploads
 from services.confluence import ConfluenceService
 from services.rag import RagOriginals, RagService
 from services.rag_ingest import RagIngest
+from services.ticket_service import run_support_tickets
 
 
 def redact_file_signature(record: logging.LogRecord) -> bool:
@@ -56,6 +57,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         stack.push_async_callback(engine.dispose)
         app.state.engine = engine
         app.state.sessions = async_sessionmaker(engine, expire_on_commit=False)
+        ticket_worker = asyncio.create_task(run_support_tickets(app.state.sessions), name="support-tickets")
+        stack.push_async_callback(stop_worker, ticket_worker)
         redis = Redis.from_url(
             redis_settings.redis_url.get_secret_value(),
             decode_responses=True,

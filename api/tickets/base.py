@@ -14,5 +14,13 @@ class TicketSystem(ABC):
     """Контракт тикет-системы. Все реализации (JSM, Zendesk, Usedesk) обязаны его поддерживать."""
 
     @abstractmethod
-    async def create(self, req: TicketRequest) -> None:
+    async def create(self, req: TicketRequest) -> str:
+        ...
+
+    @abstractmethod
+    async def find_by_reference(self, reference: str) -> str | None:
+        ...
+
+    @abstractmethod
+    async def attach_internal(self, issue_key: str, filename: str, content: bytes) -> None:
         ...

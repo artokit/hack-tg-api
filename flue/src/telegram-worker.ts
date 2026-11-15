@@ -1,17 +1,35 @@
 import { AgentRunError, init } from '@flue/runtime';
 import { type FSMFlavor, type StateSession, stateMiddleware } from '@kalutskii/grammy-fsm';
 import { type Api, type SessionFlavor, Composer, Context } from 'grammy';
+import * as v from 'valibot';
 
 import { Bars } from './agents/bars.js';
+import { SupportRequestFinalizer } from './agents/support-request-finalizer.js';
 import { responseSubmission } from './db.js';
 import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employees-api.js';
 import { renderChatReply } from './telegram-chat.js';
-import { renderRag } from './telegram-rag.js';
+import { type ClosedRequest, type CloseReason, isOperatorRequest, type SupportHandoff, supportHandoff, supportRequestClosed } from './support-request.js';
+import { renderRag, supportedRagReply, supportRagReply } from './telegram-rag.js';
 import { TelegramOutput } from './telegram-output.js';
-import { type PendingUpdate, TelegramStore } from './telegram-store.js';
+import { type ActiveRequest, type RequestPhase, TelegramRequests } from './telegram-requests.js';
+import { type PendingUpdate, resetAnswer, TelegramStore } from './telegram-store.js';
 
 const unavailable = 'Сейчас не получается ответить. Попробуй ещё раз чуть позже.';
+const feedbackQuestion = 'Удалось решить вопрос?';
+const detailsQuestion = 'Что осталось нерешённым? Могу передать вопрос оператору, если попросишь.';
+const handoffAnswer = 'Передаю вопрос оператору.';
 const inviteIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const timeoutReasons = {
+  feedback: 'feedback_timeout',
+  clarification: 'clarification_timeout',
+  details: 'details_timeout',
+  technical: 'technical_timeout',
+  handoff_confirmation: 'clarification_timeout',
+} satisfies Record<Exclude<RequestPhase, 'answer'>, CloseReason>;
+
+function shortReply(text: string): string {
+  return text.normalize('NFKC').toLowerCase().replace(/^[\s\p{P}]+|[\s\p{P}\p{Extended_Pictographic}]+$/gu, '');
+}
 
 type UpdateContext = Context & SessionFlavor<StateSession> & FSMFlavor & {
   pending: PendingUpdate;
@@ -22,6 +40,7 @@ type UpdateContext = Context & SessionFlavor<StateSession> & FSMFlavor & {
 export class TelegramWorker {
   private readonly processing = new Set<string>();
   private readonly replies = new Map<string, Promise<void>>();
+  private readonly finalizing = new Set<string>();
   private readonly output: TelegramOutput;
   private readonly handlers = new Composer<UpdateContext>();
   private scanning = false;
@@ -30,6 +49,7 @@ export class TelegramWorker {
 
   constructor(
     private readonly store: TelegramStore,
+    private readonly requests: TelegramRequests,
     private readonly telegram: Api,
     private readonly instanceId: (chatId: number) => string,
   ) {
@@ -58,7 +78,8 @@ export class TelegramWorker {
         await this.answer(ctx, accessDenied);
         return;
       }
-      ctx.answer = await this.store.reset(ctx.pending, this.instanceId(ctx.chatId));
+      await ctx.fsm.clear();
+      await this.answer(ctx, resetAnswer);
     });
     this.handlers.on('message:entities:bot_command', (ctx) => { ctx.answer = ''; });
   }
@@ -71,12 +92,18 @@ export class TelegramWorker {
         await this.store.recoverDeliveries();
         this.recovered = true;
       }
+      await this.processDeadlines();
+      for (const { outcome, finalizer_attempt } of await this.requests.finalizations()) {
+        if (this.finalizing.has(outcome.request_id)) continue;
+        this.finalizing.add(outcome.request_id);
+        void this.finalize(outcome, finalizer_attempt);
+      }
       const blockedChats = new Set<string>();
       for (const update of await this.store.pending()) {
-        if (this.processing.has(update.sequence) || blockedChats.has(update.chat_id)) continue;
+        if (this.processing.has(update.sequence) || this.replies.has(update.chat_id) || blockedChats.has(update.chat_id)) continue;
         this.processing.add(update.sequence);
         try {
-          await this.admit(update);
+          await this.runReply(update.chat_id, () => this.admit(update));
         } catch (error) {
           this.processing.delete(update.sequence);
           blockedChats.add(update.chat_id);
@@ -96,6 +123,12 @@ export class TelegramWorker {
       ? await this.handle(update, employee) : null);
     const response = answer ?? (!employee ? accessDenied : null);
     if (response !== null) {
+      if (response === resetAnswer) {
+        const active = await this.requests.active(update.chat_id);
+        if (active && BigInt(active.latest_sequence) < BigInt(update.sequence)) {
+          await this.requests.close(active, active.latest_sequence, 'reset');
+        }
+      }
       this.run(update, async () => {
         if (response) {
           await this.output.send(`command:${update.update_id}`, update.chat_id, response, false);
@@ -104,7 +137,11 @@ export class TelegramWorker {
       return;
     }
 
-    const id = await this.store.pinInstance(update, this.instanceId(Number(update.chat_id)));
+    const legacy = update.instance_id !== null && update.request_id === null;
+    const request = legacy ? undefined : await this.acceptForRequest(update);
+    if (!legacy && !request) return;
+    const id = request?.instance_id ?? update.instance_id;
+    if (!id) throw new Error('Missing Telegram request instance');
     const agent = init(Bars, { id });
     let submission = update.submission_id;
     if (submission === null) {
@@ -122,17 +159,35 @@ export class TelegramWorker {
       let deliveryId = `submission:${submissionId}`;
       let replyText = '';
       let replyHtml: string | undefined;
+      let phase: RequestPhase = 'technical';
+      let handoff: SupportHandoff | undefined;
+      let supported: ReturnType<typeof supportedRagReply>;
       try {
         const reply = await agent.read(submissionId);
         const responseId = reply.metadata?.telegramResponseId;
         if (typeof responseId === 'string') deliveryId = `response:${responseId}`;
         const ragResults = reply.data.ragAnswer;
+        const parsed = v.safeParse(supportHandoff, reply.data.supportHandoff?.at(-1));
+        if (parsed.success) {
+          if (isOperatorRequest(update.payload.text)) {
+            handoff = { ...parsed.output, reason: 'operator_requested' };
+          } else if (parsed.output.reason === 'rag_exhausted' && request?.phase === 'clarification') {
+            handoff = parsed.output;
+          } else if (parsed.output.reason === 'operator_requested') {
+            replyText = 'Если хочешь передать вопрос специалисту, напиши «передай оператору».';
+            phase = 'handoff_confirmation';
+          }
+        }
         if (ragResults?.length) {
-          const rendered = renderRag(...ragResults);
+          if (handoff) supported = supportedRagReply(ragResults);
+          const rendered = request
+            ? supportRagReply(ragResults) : { ...renderRag(...ragResults), phase: 'answer' as const };
           replyText = rendered.text;
           replyHtml = rendered.html;
-        } else {
+          phase = rendered.phase;
+        } else if (!replyText) {
           replyText = renderChatReply(...(reply.data.chatAnswer ?? [])) ?? '';
+          if (replyText) phase = 'answer';
         }
       } catch (error) {
         if (!(error instanceof AgentRunError)) throw error;
@@ -140,23 +195,138 @@ export class TelegramWorker {
       } finally {
         stopTyping();
       }
+      if (!request) {
+        if (!replyText) deliveryId = 'failure:' + await responseSubmission(submissionId);
+        await this.output.send(deliveryId, update.chat_id, replyText || unavailable, !!replyText, replyHtml);
+        return;
+      }
       if (!replyText) deliveryId = 'failure:' + await responseSubmission(submissionId);
-      await this.output.send(deliveryId, update.chat_id, replyText || unavailable, !!replyText, replyHtml);
+      await this.runReply(update.chat_id, async () => {
+        const active = await this.requests.active(update.chat_id);
+        if (active?.id !== request.id) return;
+        if (handoff) {
+          if (active.latest_sequence !== update.sequence) return;
+          const { reason, ...draft } = handoff;
+          const text = supported ? `${supported.text}\n\n${handoffAnswer}` : handoffAnswer;
+          await this.deliver(request, `handoff:${request.id}`, text, supported && {
+            html: `${supported.html}<p>${handoffAnswer}</p>`, rich: true,
+          });
+          await this.requests.close(request, update.sequence, reason, draft);
+          return;
+        }
+        await this.deliver(request, deliveryId, replyText || unavailable, {
+          sequence: update.sequence, phase, html: replyHtml, rich: !!replyText,
+        });
+      });
     });
   }
 
-  private runReply(update: PendingUpdate, deliver: () => Promise<void>): void {
-    const previous = this.replies.get(update.chat_id) ?? Promise.resolve();
+  private async acceptForRequest(update: PendingUpdate): Promise<ActiveRequest | undefined> {
+    const text = shortReply(update.payload.text);
+    const thanks = /^(?:спасибо(?: большое)?|большое спасибо|благодарю|thanks|thank you)$/u.test(text);
+    const current = await this.requests.active(update.chat_id);
+    if (!current && !update.request_id && (thanks || /^(?:привет|здравствуйте|добрый день)$/u.test(text))) {
+      this.run(update, async () => {
+        await this.output.send(
+          `chat:${update.update_id}`, update.chat_id, renderChatReply(thanks ? 'thanks' : 'greeting')!, false,
+        );
+      });
+      return;
+    }
+    const request = await this.requests.pin(update, this.instanceId(Number(update.chat_id)));
+    if (!request) {
+      this.run(update, async () => {});
+      return;
+    }
+    const feedback = request.phase === 'feedback' && /^(?:да|нет)$/u.test(text);
+    await this.requests.append(
+      request, `user:${update.update_id}`, 'user', update.received_at,
+      thanks || feedback ? update.payload.text : null, update.sequence,
+    );
+    if (thanks || (feedback && text === 'да')) {
+      await this.requests.close(request, update.sequence, thanks ? 'thanks' : 'confirmed');
+      this.run(update, async () => {
+        await this.output.send(
+          `closed:${update.update_id}`, update.chat_id, thanks ? 'Пожалуйста!' : 'Хорошо, обращение закрыто.', false,
+        );
+      });
+      return;
+    }
+    if (feedback) {
+      await this.requests.consumeFeedback(request, update.sequence, 'details');
+      this.run(update, () => this.runReply(update.chat_id, async () => {
+        await this.deliver(request, `details:${update.update_id}`, detailsQuestion, {
+          sequence: update.sequence, phase: 'details',
+        });
+      }));
+      return;
+    }
+    if (request.phase === 'feedback' || request.phase === 'answer') {
+      await this.requests.consumeFeedback(request, update.sequence, 'answer');
+    }
+    return request;
+  }
+
+  private async deliver(
+    request: ActiveRequest, id: string, text: string,
+    next?: { sequence?: string; phase?: RequestPhase; rich?: boolean; html?: string },
+  ): Promise<void> {
+    const receipt = await this.output.send(id, request.chat_id, text, next?.rich ?? false, next?.html);
+    if (receipt.status !== 'sent' || !receipt.sent_at) {
+      if (next?.sequence) await this.requests.close(request, next.sequence, 'delivery_failed');
+      return;
+    }
+    await this.requests.append(request, id, 'assistant', receipt.sent_at, text);
+    if (next?.sequence && next.phase) {
+      await this.requests.advance(request, next.sequence, next.phase, receipt.sent_at);
+    }
+  }
+
+  private async processDeadlines(): Promise<void> {
+    for (const request of await this.requests.due()) {
+      if (this.replies.has(request.chat_id)) continue;
+      void this.runReply(request.chat_id, async () => {
+        if (request.phase === 'answer') {
+          await this.deliver(request, `feedback:${request.id}:${request.latest_sequence}`, feedbackQuestion, {
+            sequence: request.latest_sequence, phase: 'feedback',
+          });
+        } else {
+          await this.requests.close(request, request.latest_sequence, timeoutReasons[request.phase]);
+        }
+      }).catch((error: unknown) => {
+        console.warn('Telegram request deadline failed', request.id, error instanceof Error ? error.name : 'Error');
+      });
+    }
+  }
+
+  private async finalize(outcome: ClosedRequest, attempt: number): Promise<void> {
+    const id = outcome.request_id;
+    try {
+      const finalizer = init(SupportRequestFinalizer, { id });
+      const receipt = await finalizer.dispatch({
+        message: { kind: 'signal', type: supportRequestClosed, body: JSON.stringify(outcome) },
+        idempotencyKey: `support-request:${id}:${attempt}`,
+      });
+      await finalizer.read(receipt);
+      await this.requests.finalized(id);
+    } catch (error) {
+      console.warn('Telegram request finalization failed', id, error instanceof Error ? error.name : 'Error');
+      await this.requests.retryFinalization(id, error instanceof AgentRunError).catch(() => {});
+    } finally {
+      this.finalizing.delete(id);
+    }
+  }
+
+  private async runReply(chatId: string, deliver: () => Promise<void>): Promise<void> {
+    const previous = this.replies.get(chatId) ?? Promise.resolve();
     const reply = previous.then(deliver);
     const completed = reply.catch(() => {});
-    this.replies.set(update.chat_id, completed);
-    this.run(update, async () => {
-      try {
-        await reply;
-      } finally {
-        if (this.replies.get(update.chat_id) === completed) this.replies.delete(update.chat_id);
-      }
-    });
+    this.replies.set(chatId, completed);
+    try {
+      await reply;
+    } finally {
+      if (this.replies.get(chatId) === completed) this.replies.delete(chatId);
+    }
   }
 
   private run(update: PendingUpdate, handle: () => Promise<void>): void {

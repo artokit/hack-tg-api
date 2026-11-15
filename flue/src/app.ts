@@ -6,6 +6,7 @@ import { confluenceChannel } from './channels/confluence.js';
 import { httpUrl, required, webhookSecret } from './config.js';
 import { pool } from './db.js';
 import { ragModel } from './rag-model.js';
+import { TelegramRequests } from './telegram-requests.js';
 import { TelegramStore } from './telegram-store.js';
 import { TelegramWorker } from './telegram-worker.js';
 
@@ -37,7 +38,7 @@ const channel = createTelegramChannel({
   },
 });
 
-export const worker = new TelegramWorker(store, client, (chatId) =>
+export const worker = new TelegramWorker(store, new TelegramRequests(pool, botId), client, (chatId) =>
   botId + ':' + channel.instanceId({ type: 'chat', chatId }),
 );
 

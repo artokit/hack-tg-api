@@ -3,10 +3,11 @@ import { serve } from '@hono/node-server';
 
 import app, { worker } from './app.js';
 import { Bars } from './agents/bars.js';
+import { SupportRequestFinalizer } from './agents/support-request-finalizer.js';
 import db from './db.js';
 import { provider } from './provider.js';
 
-const runtime = await start({ agents: [Bars], db, providers: [provider] });
+const runtime = await start({ agents: [Bars, SupportRequestFinalizer], db, providers: [provider] });
 const port = Number(process.env.PORT || 3000);
 const server = serve({ fetch: app.fetch, port, hostname: '0.0.0.0' }, () => {
   console.log(`Flue listening on port ${port}`);
