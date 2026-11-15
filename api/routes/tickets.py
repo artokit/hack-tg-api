@@ -1,9 +1,14 @@
 from pathlib import PureWindowsPath
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Path, UploadFile
 
-from depends import get_ticket_attachment_service, get_ticket_service, require_bot_token
+from config import InviteSettings
+from depends import (
+    get_invite_settings, get_support_request_service,
+    get_ticket_attachment_service, get_ticket_service, require_bot_token,
+)
 from schemas.ticket import TicketAttachmentRead, TicketCreate, TicketRead
+from services.support_requests import SupportRequestConflict, SupportRequestNotFound, SupportRequestService
 from services.ticket_service import TicketAttachmentService, TicketLookupError, TicketService
 from tickets.jsm import TicketSystemError
 
@@ -18,9 +23,19 @@ MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 async def create_ticket(
     data: TicketCreate,
     service: TicketService = Depends(get_ticket_service),
+    support: SupportRequestService = Depends(get_support_request_service),
+    token: str | None = Header(default=None, alias="X-Bot-Token", include_in_schema=False),
+    settings: InviteSettings = Depends(get_invite_settings),
 ):
     try:
+        if data.support_request_id is not None:
+            require_bot_token(token, settings)
+            return await support.create_ticket(data.support_request_id, data)
         return await service.create(data)
+    except SupportRequestNotFound as error:
+        raise HTTPException(404, "Support request not found") from error
+    except SupportRequestConflict as error:
+        raise HTTPException(409, "Support request cannot create another ticket") from error
     except TicketSystemError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 

@@ -3,6 +3,7 @@ import { serve } from '@hono/node-server';
 
 import app, { worker } from './app.js';
 import { Bars } from './agents/bars.js';
+import { SupportRequestFinalizer } from './agents/support-request-finalizer.js';
 import db from './db.js';
 import { provider } from './provider.js';
 import { startTelemetry } from './telemetry.js';
@@ -10,7 +11,7 @@ import { startTelemetry } from './telemetry.js';
 const stopTelemetry = startTelemetry();
 let runtime: Awaited<ReturnType<typeof start>>;
 try {
-  runtime = await start({ agents: [Bars], db, providers: [provider] });
+  runtime = await start({ agents: [Bars, SupportRequestFinalizer], db, providers: [provider] });
 } catch (error) {
   await stopTelemetry();
   throw error;

@@ -1,16 +1,8 @@
-import { httpUrl, required } from './config.js';
+import { botRequest } from './bot-api.js';
 import type { IncomingMessage } from './telegram-store.js';
 
 export const accessDenied = 'Доступ к боту только для сотрудников. Попроси действующее приглашение.';
 export const accessGranted = 'Тебя добавили в бота. Теперь можешь задавать вопросы.';
-
-function botRequest(path: string, options?: RequestInit): Promise<Response> {
-  return fetch(`${httpUrl('API_URL')}/private/${path}`, {
-    ...options,
-    headers: { 'Content-Type': 'application/json', 'X-Bot-Token': required('BOT_API_TOKEN') },
-    signal: AbortSignal.timeout(5_000),
-  });
-}
 
 function telegramProfile(message: IncomingMessage) {
   return {

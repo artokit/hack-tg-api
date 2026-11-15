@@ -31,9 +31,14 @@ const answer = v.object({
   parts: v.array(part),
   sources: v.array(source),
   not_found_reply: v.optional(notFoundText),
+  search_incomplete: v.optional(v.boolean()),
 });
 export const delivery = v.union([answer, v.object({ status: v.literal('unavailable') })]);
 export type RagDelivery = v.InferOutput<typeof delivery>;
+
+export function needsRagClarification(result: RagDelivery): boolean {
+  return result.status !== 'unavailable' && result.status !== 'answered' && !result.search_incomplete;
+}
 export type RagSource = v.InferOutput<typeof source>;
 type RagPart = v.InferOutput<typeof part>;
 
@@ -244,7 +249,10 @@ async function answerFromDocs(
       const supported = answers.filter((part) => part.status === 'supported').length;
       const status = supported && supported === answers.length ? 'answered' : supported ? 'partial'
         : answers.some((part) => part.status === 'ambiguous') ? 'clarify' : 'not_found';
-      result = { status, parts: answers, sources: [...sources.values()] };
+      result = {
+        status, parts: answers, sources: [...sources.values()],
+        ...(searches.some((search) => search.status === 'rejected') ? { search_incomplete: true } : {}),
+      };
       if (status === 'not_found' && searches.every((search) => search.status === 'fulfilled')) {
         const reply = await notFoundReply(agent, question, parts, operation);
         signal?.throwIfAborted();
@@ -259,7 +267,7 @@ async function answerFromDocs(
   return result;
 }
 
-export function answerTool(agent: Agent, question: string, write: (data: RagDelivery) => void) {
+export function answerTool(agent: Agent, question: string, write: (data: RagDelivery) => boolean) {
   return defineTool({
     name: 'answer_from_docs',
     timeoutMs: 55_000,
@@ -282,13 +290,14 @@ export function answerTool(agent: Agent, question: string, write: (data: RagDeli
       const result = await answerFromDocs(
         agent, question, questions, !lookup || lookup.kind === 'standalone', data.visual, signal,
       );
-      write(result);
+      const handoffRequired = write(result);
       return {
         output: {
           status: result.status,
           parts: result.status === 'unavailable' ? [] : result.parts,
+          handoff_required: handoffRequired,
         },
-        terminate: true,
+        terminate: !handoffRequired,
       };
     },
   });

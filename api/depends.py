@@ -11,6 +11,7 @@ from repositories.employee_cache import EmployeeCacheRepository
 from repositories.employees import EmployeeRepository
 from repositories.health import HealthRepository
 from repositories.invites import InviteRepository
+from repositories.support_requests import SupportRequestRepository
 from repositories.tickets import TicketRepository
 from repositories.users import UserRepository
 from services.auth import AuthService
@@ -20,6 +21,7 @@ from services.github import GithubService
 from services.health import HealthService
 from services.invites import InviteService
 from services.rag import RagOriginals, RagService
+from services.support_requests import SupportRequestService
 from services.technical_analytics import TechnicalAnalyticsService
 from services.ticket_service import TicketAttachmentService, TicketService
 from tickets.registry import build_adapter
@@ -89,12 +91,16 @@ def get_ticket_service(
     return TicketService(TicketRepository(session))
 
 
+def get_support_request_service(
+    session: AsyncSession = Depends(get_async_session),
+) -> SupportRequestService:
+    return SupportRequestService(SupportRequestRepository(session), TicketRepository(session))
+
+
 def get_ticket_attachment_service(
     session: AsyncSession = Depends(get_async_session),
 ) -> TicketAttachmentService:
-    return TicketAttachmentService(
-        TicketRepository(session), build_adapter(TICKET_ROUTES["default"])
-    )
+    return TicketAttachmentService(TicketRepository(session), build_adapter(TICKET_ROUTES["default"]))
 
 
 def get_invite_settings(request: Request) -> InviteSettings:

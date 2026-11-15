@@ -2,9 +2,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { Api, GrammyError } from 'grammy';
 
 import { recordDelivery } from './telemetry.js';
-import type { DeliveryKind, DeliveryStatus, TelegramStore } from './telegram-store.js';
+import type { DeliveryKind, DeliveryReceipt, DeliveryStatus, TelegramStore } from './telegram-store.js';
 
-type DeliveryResult = { status: DeliveryStatus; startedAt: number; finishedAt: number };
+export type DeliveryResult = DeliveryReceipt & { startedAt?: number; finishedAt?: number };
 
 export function splitReply(text: string): string[] {
   const parts: string[] = [];
@@ -73,8 +73,8 @@ export class TelegramOutput {
 
   async send(
     id: string, chatId: string, text: string, kind: DeliveryKind, markdown: boolean, html?: string,
-  ): Promise<DeliveryResult | undefined> {
-    if (!await this.store.claimDelivery(id, kind)) return;
+  ): Promise<DeliveryResult> {
+    if (!await this.store.claimDelivery(id, kind)) return this.store.delivery(id);
     const startedAt = Date.now();
     let status: DeliveryStatus = 'sent';
     try {
@@ -84,9 +84,9 @@ export class TelegramOutput {
       console.warn('Telegram delivery', status, id, error instanceof Error ? error.name : 'Error');
     }
     const finishedAt = Date.now();
-    await this.store.recordDelivery(id, status);
+    const receipt = await this.store.recordDelivery(id, status);
     recordDelivery(kind, status);
-    return { status, startedAt, finishedAt };
+    return { ...receipt, startedAt, finishedAt };
   }
 
   private async sendText(chatId: string, text: string, markdown: boolean, html?: string): Promise<void> {
