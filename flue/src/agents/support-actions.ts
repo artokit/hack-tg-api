@@ -18,11 +18,23 @@ export function reportSpamTool(report: () => void) {
 export function closeRequestTool(write: (action: SupportAction) => void) {
   return defineTool({
     name: 'close_support_request',
-    description: 'Заверши текущее обращение, только если пользователь явно подтвердил решение проблемы (confirmed) или попросил закрыть обращение либо закончить разговор (user_requested). Не закрывай нерешённый вопрос без просьбы пользователя. Сохранение истории и новый контекст обеспечит бот.',
+    description: 'Закрой текущее обращение, если сотрудник явно сообщил, что проблема решена (confirmed), или прямо попросил закрыть обращение либо согласился на закрытие (user_requested).',
     input: v.object({ reason: requestedCloseReason }),
     run({ data }) {
       write({ action: 'close', reason: data.reason });
       return { output: 'Закрытие обращения и передача на сохранение запрошены.', terminate: true };
+    },
+  });
+}
+
+export function offerCloseRequestTool(write: (action: SupportAction) => void) {
+  return defineTool({
+    name: 'offer_close_support_request',
+    description: 'Предложи закрыть открытое обращение, если по контексту сотрудник завершает разговор и больше ничего не просит. Бот сразу покажет кнопки подтверждения.',
+    input: v.object({}),
+    run() {
+      write({ action: 'offer_close' });
+      return { output: 'Бот спросит, закрыть ли обращение.', terminate: true };
     },
   });
 }

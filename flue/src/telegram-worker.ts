@@ -21,19 +21,20 @@ import { telegramTextDelivery } from './telegram-spam.js';
 import { type DeliveryKind, type PendingUpdate, TelegramStore } from './telegram-store.js';
 
 const unavailable = 'Сейчас не получается ответить. Попробуйте чуть позже.';
-const feedbackQuestion = 'Удалось решить вопрос?';
+const closeQuestion = 'Закрыть обращение?';
 const detailsQuestion = 'Что осталось нерешённым?';
 const closedAnswer = 'Обращение закрыто.';
 const handoffAnswer = 'Передаю вопрос специалисту.';
 const inviteIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const timeoutReasons = {
+  answer: 'feedback_timeout',
   feedback: 'feedback_timeout',
   clarification: 'clarification_timeout',
   details: 'details_timeout',
   technical: 'technical_timeout',
   handoff_confirmation: 'clarification_timeout',
   close_confirmation: 'clarification_timeout',
-} satisfies Record<Exclude<RequestPhase, 'answer'>, CloseReason>;
+} satisfies Record<RequestPhase, CloseReason>;
 
 function shortReply(text: string): string {
   return text.normalize('NFKC').toLowerCase().replace(/^[\s\p{P}]+|[\s\p{P}\p{Extended_Pictographic}]+$/gu, '');
@@ -103,10 +104,10 @@ export class TelegramWorker {
         this.nextSpamCleanup = Date.now() + 60_000;
       }
       await this.processDeadlines();
-      for (const { outcome, finalizer_attempt } of await this.requests.finalizations()) {
+      for (const { outcome, finalizer_attempt, prompt_message_id } of await this.requests.finalizations()) {
         if (this.finalizing.has(outcome.request_id)) continue;
         this.finalizing.add(outcome.request_id);
-        void this.finalize(outcome, finalizer_attempt);
+        void this.finalize(outcome, finalizer_attempt, prompt_message_id);
       }
       const blockedChats = new Set<string>();
       const pendingChats = new Set<string>();
@@ -190,10 +191,7 @@ export class TelegramWorker {
     }
 
     const { attachment, text } = update.payload;
-    let message: DeliveredMessageInput = attachment || update.payload.supportAction ? text : {
-      kind: 'signal', type: telegramTextDelivery, tagName: 'telegram_message', body: text,
-      attributes: { update_id: update.update_id },
-    };
+    let message: DeliveredMessageInput = text;
     if (attachment && update.submission_id === null) {
       const loaded = await loadAttachment(this.telegram, attachment, text);
       if ('error' in loaded) {
@@ -211,6 +209,15 @@ export class TelegramWorker {
     const agent = init(Bars, { id });
     let submission = update.submission_id;
     if (submission === null) {
+      if (!attachment && !update.payload.supportAction) {
+        message = {
+          kind: 'signal', type: telegramTextDelivery, tagName: 'telegram_message', body: text,
+          attributes: {
+            update_id: update.update_id,
+            ...(request && !request.conversation_only ? { request_phase: request.phase } : {}),
+          },
+        };
+      }
       const receipt = await agent.dispatch({
         message,
         idempotencyKey: `telegram:${update.update_id}`,
@@ -303,7 +310,7 @@ export class TelegramWorker {
           return;
         }
         const active = await this.requests.active(update.chat_id);
-        if (active?.id !== request.id) return;
+        if (active?.id !== request.id || BigInt(active.phase_sequence) > BigInt(update.sequence)) return;
         if (action) {
           await this.applyAction(update, active, action);
           return;
@@ -312,7 +319,8 @@ export class TelegramWorker {
           await this.deliver(request, deliveryId, replyText);
           return;
         }
-        await this.requests.clearDeadline(request, update.sequence);
+        await this.dismissPrompt(active);
+        await this.requests.clearDeadline(active, update.sequence);
         const receipt = await this.deliver(request, deliveryId, replyText || unavailable, {
           sequence: update.sequence, phase: followUp ? undefined : phase,
           blocks: replyBlocks, rich: rich && !!replyText, kind, buttons: followUp ? undefined : buttons, flags,
@@ -344,11 +352,26 @@ export class TelegramWorker {
   }
 
   private async applyAction(update: PendingUpdate, request: ActiveRequest, action: SupportAction): Promise<void> {
-    if (request.latest_sequence !== update.sequence) return;
-    if (await this.requests.close(request, update.sequence, action.reason)) {
-      await this.output.send(`closed:${update.update_id}`, update.chat_id,
-        'Обращение закрыто. Следующий вопрос начнёт новое обращение.', 'service', false);
+    if (request.latest_sequence !== update.sequence || request.conversation_only) return;
+    if (action.action === 'offer_close') {
+      if (request.phase !== 'close_confirmation') {
+        await this.dismissPrompt(request);
+        await this.deliver(request, `offer-close:${update.update_id}`, closeQuestion, {
+          sequence: update.sequence, phase: 'close_confirmation', buttons: 'close', optional: true,
+          flags: { hasAnswer: false, hasClarification: false },
+        });
+      }
+      return;
     }
+    if (await this.requests.close(request, update.sequence, action.reason)) {
+      await this.output.send(`closed:${update.update_id}`, update.chat_id, closedAnswer, 'service', false);
+    }
+  }
+
+  private async dismissPrompt(request: Pick<ActiveRequest, 'id' | 'chat_id' | 'prompt_message_id'>): Promise<void> {
+    if (request.prompt_message_id === null) return;
+    await this.output.removeKeyboard(request.chat_id, request.prompt_message_id);
+    await this.requests.clearPrompt(request.id, request.prompt_message_id);
   }
 
   private async recordReplyTiming(submissionId: string, receipt: DeliveryResult): Promise<void> {
@@ -383,7 +406,12 @@ export class TelegramWorker {
         : action.kind === 'n' ? previous !== 'feedback'
           : action.kind === 'c' ? previous !== 'close_confirmation'
             : previous !== 'feedback' && previous !== 'close_confirmation'))) {
-      this.sendService(update, 'chat');
+      const messageId = action.messageId;
+      this.run(update, () => this.runReply(update.chat_id, async () => {
+        if (messageId !== undefined && current?.prompt_message_id !== messageId) {
+          await this.output.removeKeyboard(update.chat_id, messageId);
+        }
+      }));
       return;
     }
     if ((!current || current.conversation_only) && close) {
@@ -401,10 +429,11 @@ export class TelegramWorker {
     const handoff = action?.kind === 's' || isOperatorRequest(text)
       || (confirmingHandoff && /^(?:да|да,? передайте|да,? передай|да,? пожалуйста)$/u.test(text));
     const declinedHandoff = confirmingHandoff && /^(?:нет|нет,? спасибо)$/u.test(text);
-    const yes = (markingSolved || confirmingClose) && /^(?:да|да,? закрыть)$/u.test(text);
-    const no = (markingSolved || confirmingClose) && /^(?:нет|нет,? (?:нужна помощь|продолжим))$/u.test(text);
+    const yes = (markingSolved || confirmingClose) && /^(?:да|(?:да,? )?закрыть)$/u.test(text);
+    const no = markingSolved && /^(?:нет|нет,? нужна помощь)$/u.test(text);
+    const keepOpen = confirmingClose && /^(?:нет|нет,? продолжим|продолжить|продолжим)$/u.test(text);
     const historyText = attachment ? [message, `[${attachmentSummary(attachment)}]`].filter(Boolean).join('\n')
-      : close || yes || no || handoff || declinedHandoff || action ? message : null;
+      : close || yes || no || keepOpen || handoff || declinedHandoff || action ? message : null;
     await this.requests.append(request, `user:${update.update_id}`, 'user', update.received_at, historyText, update.sequence);
     const reason = close || (yes && confirmingClose) ? 'user_closed'
       : handoff ? 'operator_requested' : yes ? 'confirmed' : undefined;
@@ -417,14 +446,15 @@ export class TelegramWorker {
       this.sendService(update, 'closed', closed ? closeAcknowledgement(reason) : undefined, action?.messageId);
       return;
     }
-    if (no || declinedHandoff) {
+    if (no || keepOpen || declinedHandoff) {
+      if (request.prompt_message_id !== action?.messageId) await this.dismissPrompt(request);
       await this.requests.clearDeadline(request, update.sequence);
       const prompt = declinedHandoff
-        ? { text: 'Хорошо. Если появятся новые детали, напишите.', phase: 'clarification', buttons: undefined } as const
-        : { text: detailsQuestion, phase: 'details', buttons: 'operator' } as const;
+        ? 'Хорошо. Если появятся новые детали, напишите.'
+        : keepOpen ? 'Хорошо, продолжим. Что ещё уточнить?' : detailsQuestion;
       this.run(update, () => this.runReply(update.chat_id, async () => {
-        await this.deliver(request, `prompt:${update.update_id}`, prompt.text, {
-          sequence: update.sequence, phase: prompt.phase, buttons: prompt.buttons, replaceMessageId: action?.messageId,
+        await this.deliver(request, `prompt:${update.update_id}`, prompt, {
+          sequence: update.sequence, phase: declinedHandoff ? 'clarification' : 'details', replaceMessageId: action?.messageId,
         });
       }));
       return;
@@ -467,7 +497,7 @@ export class TelegramWorker {
     };
     await this.requests.append(request, id, 'assistant', receipt.sent_at, text, undefined, flags);
     if (next?.sequence && next.phase) {
-      await this.requests.advance(request, next.sequence, next.phase, receipt.sent_at);
+      await this.requests.advance(request, next.sequence, next.phase, receipt.sent_at, receipt.message_id);
     }
     return receipt;
   }
@@ -480,10 +510,6 @@ export class TelegramWorker {
         if (!due) return;
         if (due.conversation_only) {
           await this.requests.expireConversation(due);
-        } else if (due.phase === 'answer') {
-          await this.deliver(due, `feedback:${due.id}:${due.latest_sequence}`, feedbackQuestion, {
-            sequence: due.latest_sequence, phase: 'feedback', buttons: 'feedback',
-          });
         } else {
           await this.requests.close(due, due.latest_sequence, timeoutReasons[due.phase], undefined, true);
         }
@@ -493,9 +519,14 @@ export class TelegramWorker {
     }
   }
 
-  private async finalize(outcome: ClosedRequest, attempt: number): Promise<void> {
+  private async finalize(outcome: ClosedRequest, attempt: number, promptMessageId: number | null): Promise<void> {
     const id = outcome.request_id;
     try {
+      if (promptMessageId !== null) {
+        await this.runReply(outcome.telegram_chat_id, () => this.dismissPrompt({
+          id, chat_id: outcome.telegram_chat_id, prompt_message_id: promptMessageId,
+        }));
+      }
       if (outcome.handoff) {
         const finalizer = init(SupportRequestFinalizer, { id });
         const receipt = await finalizer.dispatch({
