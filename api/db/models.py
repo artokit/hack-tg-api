@@ -102,15 +102,6 @@ class Invite(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class AwMockSample(Base):
-    __tablename__ = "aw_mock_samples"
-
-    id: Mapped[str] = mapped_column(String(100), primary_key=True)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    series: Mapped[str] = mapped_column(String(50))
-    value: Mapped[float] = mapped_column(Float)
-
-
 class RagDocument(Base):
     __tablename__ = "rag_documents"
 

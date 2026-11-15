@@ -13,7 +13,7 @@ import { getSupportTicketUrl } from './support-api.js';
 import { recordDelivery, recordReplyDuration } from './telemetry.js';
 import { attachmentSummary, loadAttachment } from './telegram-attachments.js';
 import { attachmentReply, isAcknowledgement, isCloseRequest, renderChatReply } from './telegram-chat.js';
-import { type ClosedRequest, type CloseReason, isOperatorRequest, type SupportAction, supportAction, supportRequestClosed } from './support-request.js';
+import { type ClosedRequest, type CloseReason, isOperatorRequest, type ReplyFlags, type SupportAction, supportAction, supportRequestClosed } from './support-request.js';
 import { renderRag, supportRagReply } from './telegram-rag.js';
 import { type DeliveryResult, TelegramOutput } from './telegram-output.js';
 import { type ActiveRequest, type RequestPhase, TelegramRequests } from './telegram-requests.js';
@@ -201,6 +201,7 @@ export class TelegramWorker {
       let buttons: SupportButtons | undefined;
       let action: SupportAction | undefined;
       let available = true;
+      let flags: ReplyFlags = { hasAnswer: false, hasClarification: false };
       try {
         const reply = await agent.read(submissionId);
         const parsedAction = v.safeParse(supportAction, reply.data.supportAction?.at(-1));
@@ -220,9 +221,14 @@ export class TelegramWorker {
           replyHtml = rendered.html;
           replyImages = rendered.images;
           available = rendered.available;
+          flags = { hasAnswer: rendered.hasAnswer, hasClarification: rendered.hasClarification };
         } else if (parsedAttachment.success) {
           replyText = parsedAttachment.output.text;
           phase = parsedAttachment.output.kind === 'clarify' ? 'clarification' : 'answer';
+          flags = {
+            hasAnswer: parsedAttachment.output.kind === 'answer',
+            hasClarification: parsedAttachment.output.kind === 'clarify',
+          };
           rich = false;
         } else if (!replyText) {
           replyText = renderChatReply(...(reply.data.chatAnswer ?? [])) ?? '';
@@ -251,7 +257,7 @@ export class TelegramWorker {
         }
         const receipt = await this.deliver(request, deliveryId, replyText || unavailable, {
           sequence: update.sequence, phase: followUp ? undefined : phase,
-          html: replyHtml, rich: rich && !!replyText, kind, images: replyImages, buttons: followUp ? undefined : buttons,
+          html: replyHtml, rich: rich && !!replyText, kind, images: replyImages, buttons: followUp ? undefined : buttons, flags,
         });
         if (followUp && receipt.status === 'sent') {
           const next = await this.deliver(request, `${deliveryId}:follow-up`, followUp, {
@@ -385,7 +391,7 @@ export class TelegramWorker {
     request: ActiveRequest, id: string, text: string,
     next?: {
       sequence?: string; phase?: RequestPhase; rich?: boolean; html?: string;
-      kind?: DeliveryKind; images?: string[]; buttons?: SupportButtons; optional?: boolean;
+      kind?: DeliveryKind; images?: string[]; buttons?: SupportButtons; optional?: boolean; flags?: ReplyFlags;
     },
   ): Promise<DeliveryResult> {
     const keyboard = next?.buttons && next.sequence
@@ -397,7 +403,12 @@ export class TelegramWorker {
       if (next?.sequence && !next.optional) await this.requests.close(request, next.sequence, 'delivery_failed');
       return receipt;
     }
-    await this.requests.append(request, id, 'assistant', receipt.sent_at, text);
+    const flags = next?.flags ?? {
+      hasAnswer: false,
+      hasClarification: next?.phase === 'clarification' || next?.phase === 'details'
+        || next?.phase === 'handoff_confirmation' || next?.phase === 'close_confirmation',
+    };
+    await this.requests.append(request, id, 'assistant', receipt.sent_at, text, undefined, flags);
     if (next?.sequence && next.phase) {
       await this.requests.advance(request, next.sequence, next.phase, receipt.sent_at);
     }

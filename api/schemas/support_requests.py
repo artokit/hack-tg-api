@@ -7,7 +7,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validato
 
 CloseReason = Literal[
     "confirmed", "thanks", "user_closed", "feedback_timeout", "clarification_timeout", "details_timeout",
-    "technical_timeout", "reset", "delivery_failed", "rag_exhausted", "operator_requested",
+    "technical_timeout", "delivery_failed", "rag_exhausted", "operator_requested",
     "user_requested", "spam",
 ]
 SupportRequestCategory = Literal[
