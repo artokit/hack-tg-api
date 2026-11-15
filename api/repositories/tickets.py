@@ -7,6 +7,10 @@ class TicketRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
 
+    async def get(self, ticket_id: int) -> Ticket | None:
+        ticket = await self._session.get(Ticket, ticket_id)
+        return ticket
+
     async def create(self, ticket: Ticket) -> Ticket:
         self._session.add(ticket)
         try:
