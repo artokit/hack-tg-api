@@ -83,6 +83,26 @@ export default {
         state jsonb,
         PRIMARY KEY (bot_id, chat_id)
       );
+
+      ALTER TABLE bars_telegram_deliveries ADD COLUMN IF NOT EXISTS chat_id bigint;
+      ALTER TABLE bars_telegram_deliveries ADD COLUMN IF NOT EXISTS text text;
+      ALTER TABLE bars_telegram_deliveries ADD COLUMN IF NOT EXISTS update_sequence bigint;
+      ALTER TABLE bars_telegram_deliveries ADD COLUMN IF NOT EXISTS history_export boolean NOT NULL DEFAULT false;
+
+      CREATE TABLE IF NOT EXISTS bars_telegram_messages (
+        sequence bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        bot_id text NOT NULL,
+        chat_id bigint NOT NULL,
+        message_key text NOT NULL,
+        update_sequence bigint NOT NULL,
+        role text NOT NULL CHECK (role IN ('user', 'assistant')),
+        text text NOT NULL,
+        starts_dialog boolean NOT NULL DEFAULT false,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (bot_id, message_key)
+      );
+      CREATE INDEX IF NOT EXISTS bars_telegram_messages_chat
+        ON bars_telegram_messages (bot_id, chat_id, update_sequence, sequence);
     `);
   },
 };

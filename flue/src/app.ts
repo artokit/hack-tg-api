@@ -21,17 +21,32 @@ const store = new TelegramStore(pool, botId);
 const channel = createTelegramChannel({
   secretToken: webhookSecret(),
   async webhook({ update }) {
-    const message = update.message;
-    const text = message?.text?.trim();
-    if (!message?.from || message.chat.type !== 'private' || !text) return undefined;
-
-    await store.enqueue(update.update_id, message.chat.id, {
-      text,
-      userId: message.from.id,
-      firstName: message.from.first_name ?? null,
-      lastName: message.from.last_name ?? null,
-      username: message.from.username ?? null,
-    });
+    const callback = update.callback_query;
+    if (callback) {
+      const message = callback.message;
+      if (callback.data !== 'end_ask' || !message || message.chat.type !== 'private'
+        || message.chat.id !== callback.from.id) return undefined;
+      await store.enqueue(update.update_id, message.chat.id, {
+        text: '',
+        userId: callback.from.id,
+        firstName: callback.from.first_name ?? null,
+        lastName: callback.from.last_name ?? null,
+        username: callback.from.username ?? null,
+        callback: { id: callback.id, data: 'end_ask', messageId: message.message_id },
+      });
+      await client.answerCallbackQuery(callback.id, { text: 'Подготавливаю историю общения.' }).catch(() => {});
+    } else {
+      const message = update.message;
+      const text = message?.text?.trim();
+      if (!message?.from || message.chat.type !== 'private' || !text) return undefined;
+      await store.enqueue(update.update_id, message.chat.id, {
+        text,
+        userId: message.from.id,
+        firstName: message.from.first_name ?? null,
+        lastName: message.from.last_name ?? null,
+        username: message.from.username ?? null,
+      });
+    }
     void worker.scan();
     return undefined;
   },

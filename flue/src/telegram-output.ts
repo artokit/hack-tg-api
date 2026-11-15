@@ -1,5 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { Api, GrammyError } from 'grammy';
+import type { InlineKeyboardMarkup } from 'grammy/types';
 
 import type { TelegramStore } from './telegram-store.js';
 
@@ -68,21 +69,29 @@ export class TelegramOutput {
     }
   }
 
-  async send(id: string, chatId: string, text: string, markdown: boolean, html?: string): Promise<void> {
-    if (!await this.store.claimDelivery(id)) return;
+  async send(
+    id: string, chatId: string, text: string, markdown: boolean, html?: string,
+    options: { replyMarkup?: InlineKeyboardMarkup; updateSequence?: string; historyExport?: boolean } = {},
+  ): Promise<void> {
+    if (!await this.store.claimDelivery(id, chatId, text, options.updateSequence ?? null, options.historyExport ?? false)) return;
     let status: 'sent' | 'failed' | 'unknown';
     try {
-      if (html || markdown) {
+      if ((html || markdown) && !options.replyMarkup) {
         try {
-          await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }));
+          await withRateLimit(() => this.client.sendRichMessage(
+            chatId, html ? { html } : { markdown: text }, { reply_markup: options.replyMarkup },
+          ));
           await this.store.recordDelivery(id, 'sent');
           return;
         } catch (error) {
           if (!(error instanceof GrammyError) || error.error_code !== 400) throw error;
         }
       }
-      for (const part of splitReply(text)) {
-        await withRateLimit(() => this.client.sendMessage(chatId, part));
+      const parts = splitReply(text);
+      for (const [index, part] of parts.entries()) {
+        await withRateLimit(() => this.client.sendMessage(chatId, part, {
+          reply_markup: index === parts.length - 1 ? options.replyMarkup : undefined,
+        }));
       }
       status = 'sent';
     } catch (error) {

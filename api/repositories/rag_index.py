@@ -25,10 +25,12 @@ class RagIndex:
     def __init__(
         self, http: httpx.AsyncClient, base_url: str, key: str | None,
         *, qdrant: str = "http://qdrant:6333", collection: str = "bars_docs_qwen3_v1",
+        min_similarity: float = 0.6,
     ):
         self.http = http
         self.collection = collection
         self.qdrant = qdrant.rstrip("/")
+        self.min_similarity = min_similarity
         self.embedding = base_url.rstrip("/") + "/embeddings"
         openrouter = urlsplit(base_url).hostname == "openrouter.ai"
         self.model = "qwen/qwen3-embedding-8b" if openrouter else "Qwen/Qwen3-Embedding-8B"
@@ -169,7 +171,7 @@ class RagIndex:
         [vector] = await self.vectors([f"Instruct: {QUERY_INSTRUCTION}\nQuery: {text}"])
         result = await self.request("POST", "/points/query", {
             "query": vector, "filter": self.filter(versions),
-            "limit": 8, "with_payload": True,
+            "limit": 8, "with_payload": True, "score_threshold": self.min_similarity,
         })
         return [row["payload"] for row in result["points"]]
 

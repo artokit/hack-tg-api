@@ -86,7 +86,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             base_url = str(embeddings.embedding_base_url)
             key = embeddings.embedding_api_key.get_secret_value() if embeddings.embedding_api_key else None
             model = RagModel(http, secret)
-            index = RagIndex(http, base_url, key)
+            index = RagIndex(
+                http, base_url, key, min_similarity=embeddings.rag_min_similarity,
+            )
             uploads = RagUploads(index.key)
             app.state.rag_service = RagService(jobs, index, files)
 

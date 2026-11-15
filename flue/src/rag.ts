@@ -67,6 +67,10 @@ function identifiers(text: string): string[] {
   ))];
 }
 
+export function hasDocumentationIdentifiers(text: string): boolean {
+  return identifiers(text).length > 0;
+}
+
 function searchParts(original: string, questions?: string[]): SearchPart[] {
   const explicit = identifiers(original);
   const parts: SearchPart[] = [];

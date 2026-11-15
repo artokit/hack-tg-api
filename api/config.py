@@ -76,6 +76,7 @@ class EmbeddingSettings(BaseSettings):
 
     embedding_base_url: AnyHttpUrl | None = None
     embedding_api_key: SecretStr | None = None
+    rag_min_similarity: float = Field(default=0.6, ge=-1, le=1)
 
 
 class FileSettings(BaseSettings):

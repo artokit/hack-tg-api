@@ -9,6 +9,12 @@ export interface IncomingMessage {
   firstName?: string | null;
   lastName?: string | null;
   username?: string | null;
+  callback?: { id: string; data: 'end_ask'; messageId: number };
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  text: string;
 }
 
 export interface PendingUpdate {
@@ -26,9 +32,43 @@ export class TelegramStore {
 
   async enqueue(updateId: number, chatId: number, message: IncomingMessage): Promise<void> {
     await this.pool.query(`
-      INSERT INTO bars_telegram_updates (bot_id, update_id, chat_id, payload)
-      VALUES ($1, $2, $3, $4) ON CONFLICT (bot_id, update_id) DO NOTHING
-    `, [this.botId, updateId, chatId, message]);
+      WITH incoming AS (
+        INSERT INTO bars_telegram_updates (bot_id, update_id, chat_id, payload)
+        VALUES ($1, $2, $3, $4) ON CONFLICT (bot_id, update_id) DO NOTHING
+        RETURNING sequence
+      )
+      INSERT INTO bars_telegram_messages (
+        bot_id, chat_id, message_key, update_sequence, role, text, starts_dialog
+      )
+      SELECT $1, $3, $5, sequence, 'user', $6, $7 FROM incoming WHERE $8
+    `, [
+      this.botId, updateId, chatId, message, `user:${updateId}`, message.text,
+      /^\/start(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(message.text), !message.callback,
+    ]);
+  }
+
+  async hasEarlierPending(update: PendingUpdate): Promise<boolean> {
+    const result = await this.pool.query(`
+      SELECT 1 FROM bars_telegram_updates
+      WHERE bot_id = $1 AND chat_id = $2 AND sequence < $3 AND finished_at IS NULL LIMIT 1
+    `, [this.botId, update.chat_id, update.sequence]);
+    return result.rows.length > 0;
+  }
+
+  async history(update: PendingUpdate): Promise<ChatMessage[]> {
+    const result = await this.pool.query<ChatMessage>(`
+      WITH boundary AS (
+        SELECT update_sequence FROM bars_telegram_messages
+        WHERE bot_id = $1 AND chat_id = $2 AND starts_dialog AND update_sequence < $3
+        ORDER BY update_sequence DESC LIMIT 1
+      )
+      SELECT role, text FROM bars_telegram_messages
+      WHERE bot_id = $1 AND chat_id = $2
+        AND update_sequence >= COALESCE((SELECT update_sequence FROM boundary), 0)
+        AND update_sequence < $3
+      ORDER BY sequence
+    `, [this.botId, update.chat_id, update.sequence]);
+    return result.rows;
   }
 
   async pending(): Promise<PendingUpdate[]> {
@@ -136,17 +176,28 @@ export class TelegramStore {
     if (result.rowCount) console.warn('Telegram deliveries interrupted during send', result.rowCount);
   }
 
-  async claimDelivery(id: string): Promise<boolean> {
+  async claimDelivery(
+    id: string, chatId: string, text: string, updateSequence: string | null, historyExport: boolean,
+  ): Promise<boolean> {
     const result = await this.pool.query(`
-      INSERT INTO bars_telegram_deliveries (bot_id, delivery_id, status)
-      VALUES ($1, $2, 'sending') ON CONFLICT (bot_id, delivery_id) DO NOTHING
-    `, [this.botId, id]);
+      INSERT INTO bars_telegram_deliveries (
+        bot_id, delivery_id, status, chat_id, text, update_sequence, history_export
+      )
+      VALUES ($1, $2, 'sending', $3, $4, $5, $6) ON CONFLICT (bot_id, delivery_id) DO NOTHING
+    `, [this.botId, id, chatId, text, updateSequence, historyExport]);
     return result.rowCount === 1;
   }
 
   async recordDelivery(id: string, status: 'sent' | 'failed' | 'unknown'): Promise<void> {
     await this.pool.query(`
-      UPDATE bars_telegram_deliveries SET status = $3 WHERE bot_id = $1 AND delivery_id = $2
+      WITH delivered AS (
+        UPDATE bars_telegram_deliveries SET status = $3 WHERE bot_id = $1 AND delivery_id = $2
+        RETURNING chat_id, text, update_sequence, history_export
+      )
+      INSERT INTO bars_telegram_messages (bot_id, chat_id, message_key, update_sequence, role, text)
+      SELECT $1, chat_id, $2, update_sequence, 'assistant', text FROM delivered
+      WHERE $3 = 'sent' AND NOT history_export AND update_sequence IS NOT NULL
+      ON CONFLICT (bot_id, message_key) DO NOTHING
     `, [this.botId, id, status]);
   }
 }

@@ -5,6 +5,8 @@ import { type Api, type SessionFlavor, Composer, Context } from 'grammy';
 import { Bars } from './agents/bars.js';
 import { responseSubmission } from './db.js';
 import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employees-api.js';
+import { get_support_keyboard } from './keyboards/support.js';
+import { hasDocumentationIdentifiers } from './rag.js';
 import { renderRag } from './telegram-rag.js';
 import { TelegramOutput } from './telegram-output.js';
 import { type PendingUpdate, TelegramStore } from './telegram-store.js';
@@ -72,10 +74,15 @@ export class TelegramWorker {
       }
       const blockedChats = new Set<string>();
       for (const update of await this.store.pending()) {
-        if (this.processing.has(update.sequence) || blockedChats.has(update.chat_id)) continue;
+        if (blockedChats.has(update.chat_id)) continue;
+        if (this.processing.has(update.sequence)) {
+          if (update.payload.callback) blockedChats.add(update.chat_id);
+          continue;
+        }
         this.processing.add(update.sequence);
         try {
           await this.admit(update);
+          if (update.payload.callback) blockedChats.add(update.chat_id);
         } catch (error) {
           this.processing.delete(update.sequence);
           blockedChats.add(update.chat_id);
@@ -90,14 +97,33 @@ export class TelegramWorker {
   }
 
   private async admit(update: PendingUpdate): Promise<void> {
+    if (update.payload.callback && await this.store.hasEarlierPending(update)) {
+      this.processing.delete(update.sequence);
+      return;
+    }
     const employee = await isEmployee(update.payload);
+    if (update.payload.callback) {
+      this.runReply(update, async () => {
+        const messages = employee ? await this.store.history(update) : [];
+        const text = employee
+          ? messages.map((message) => `${message.role === 'assistant' ? 'Бот' : 'Пользователь'}: ${message.text}`).join('\n\n')
+            || 'История общения пока пуста. Начните диалог командой /start.'
+          : accessDenied;
+        await this.output.send(`history:${update.update_id}`, update.chat_id, text, false, undefined, {
+          updateSequence: update.sequence, historyExport: true,
+        });
+      });
+      return;
+    }
     const answer = update.command_answer ?? (update.instance_id === null
       ? await this.handle(update, employee) : null);
     const response = answer ?? (!employee ? accessDenied : null);
     if (response !== null) {
       this.run(update, async () => {
         if (response) {
-          await this.output.send(`command:${update.update_id}`, update.chat_id, response, false);
+          await this.output.send(`command:${update.update_id}`, update.chat_id, response, false, undefined, {
+            updateSequence: update.sequence,
+          });
         }
       });
       return;
@@ -121,6 +147,7 @@ export class TelegramWorker {
       let deliveryId = `submission:${submissionId}`;
       let replyText = '';
       let replyHtml: string | undefined;
+      let needsHuman = false;
       try {
         const reply = await agent.read(submissionId);
         const responseId = reply.metadata?.telegramResponseId;
@@ -130,8 +157,10 @@ export class TelegramWorker {
           const rendered = renderRag(...ragResults);
           replyText = rendered.text;
           replyHtml = rendered.html;
+          needsHuman = rendered.needsHuman;
         } else {
           replyText = reply.text.trim();
+          needsHuman = hasDocumentationIdentifiers(update.payload.text);
         }
       } catch (error) {
         if (!(error instanceof AgentRunError)) throw error;
@@ -140,7 +169,10 @@ export class TelegramWorker {
         stopTyping();
       }
       if (!replyText) deliveryId = 'failure:' + await responseSubmission(submissionId);
-      await this.output.send(deliveryId, update.chat_id, replyText || unavailable, !!replyText, replyHtml);
+      await this.output.send(deliveryId, update.chat_id, replyText || unavailable, !!replyText, replyHtml, {
+        replyMarkup: needsHuman || !replyText ? get_support_keyboard() : undefined,
+        updateSequence: update.sequence,
+      });
     });
   }
 
