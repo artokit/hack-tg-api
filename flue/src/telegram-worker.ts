@@ -12,7 +12,7 @@ import { getSupportKeyboard, type SupportButtons } from './keyboards/support.js'
 import { getSupportTicketUrl } from './support-api.js';
 import { recordDelivery, recordReplyDuration } from './telemetry.js';
 import { isAcknowledgement, isCloseRequest, renderChatReply } from './telegram-chat.js';
-import { type ClosedRequest, type CloseReason, isOperatorRequest, type SupportAction, supportAction, supportRequestClosed } from './support-request.js';
+import { type ClosedRequest, type CloseReason, type HandoffDraft, isOperatorRequest, type SupportAction, supportAction, supportRequestClosed } from './support-request.js';
 import { renderRag, supportRagReply } from './telegram-rag.js';
 import { type DeliveryResult, TelegramOutput } from './telegram-output.js';
 import { type ActiveRequest, type RequestPhase, TelegramRequests } from './telegram-requests.js';
@@ -41,7 +41,7 @@ function shortReply(text: string): string {
 function closeAcknowledgement(reason: CloseReason | undefined): string | undefined {
   if (reason === 'thanks') return `Пожалуйста! ${closedAnswer}`;
   if (reason === 'confirmed' || reason === 'user_closed' || reason === 'user_requested') return closedAnswer;
-  if (reason === 'operator_requested') return handoffAnswer;
+  if (reason === 'operator_requested' || reason === 'rag_exhausted') return handoffAnswer;
 }
 
 type UpdateContext = Context & SessionFlavor<StateSession> & FSMFlavor & {
@@ -171,6 +171,7 @@ export class TelegramWorker {
       let followUp: string | undefined;
       let buttons: SupportButtons | undefined;
       let action: SupportAction | undefined;
+      let handoff: HandoffDraft | undefined;
       let available = true;
       try {
         const reply = await agent.read(submissionId);
@@ -183,13 +184,17 @@ export class TelegramWorker {
           const rendered: ReturnType<typeof supportRagReply> = request
             ? supportRagReply(ragResults, request.phase)
             : { ...renderRag(...ragResults), phase: 'answer' };
-          phase = rendered.phase;
-          followUp = rendered.followUp;
-          if (rendered.offerSupport) buttons = 'operator';
-          replyText = rendered.text;
-          replyHtml = rendered.html;
-          replyImages = rendered.images;
-          available = rendered.available;
+          if ('handoff' in rendered) {
+            handoff = rendered.handoff;
+          } else {
+            phase = rendered.phase;
+            followUp = rendered.followUp;
+            if (rendered.offerSupport) buttons = 'operator';
+            replyText = rendered.text;
+            replyHtml = rendered.html;
+            replyImages = rendered.images;
+            available = rendered.available;
+          }
         } else if (!replyText) {
           replyText = renderChatReply(...(reply.data.chatAnswer ?? [])) ?? '';
         }
@@ -199,7 +204,7 @@ export class TelegramWorker {
       } finally {
         stopTyping();
       }
-      if (!replyText && !action) deliveryId = 'failure:' + await responseSubmission(submissionId);
+      if (!replyText && !action && !handoff) deliveryId = 'failure:' + await responseSubmission(submissionId);
       const kind = replyText && available ? 'answer' : 'fallback';
       if (!request) {
         const receipt = await this.output.send(
@@ -213,6 +218,12 @@ export class TelegramWorker {
         if (active?.id !== request.id) return;
         if (action) {
           await this.applyAction(update, active, action);
+          return;
+        }
+        if (handoff) {
+          if (await this.requests.close(active, update.sequence, 'rag_exhausted', handoff)) {
+            await this.output.send(`closed:${update.update_id}`, update.chat_id, handoffAnswer, 'service', false);
+          }
           return;
         }
         const receipt = await this.deliver(request, deliveryId, replyText || unavailable, {

@@ -1,6 +1,7 @@
 import * as v from 'valibot';
 
 import { delivery, needsRagClarification, type RagSource } from './rag.js';
+import type { HandoffDraft } from './support-request.js';
 import type { RequestPhase } from './telegram-requests.js';
 
 const ragUnavailable = 'Поиск по документации сейчас недоступен. Попробуйте чуть позже.';
@@ -24,7 +25,7 @@ export function supportRagReply(values: unknown[], previous: RequestPhase): RagM
   phase: RequestPhase;
   followUp?: string;
   offerSupport?: true;
-} {
+} | { handoff: HandoffDraft } {
   const results = values.flatMap((value) => {
     const parsed = v.safeParse(delivery, value);
     return parsed.success ? [parsed.output] : [];
@@ -33,6 +34,12 @@ export function supportRagReply(values: unknown[], previous: RequestPhase): RagM
   if (!result || result.status === 'unavailable' || !needsRagClarification(result)) {
     const phase = result?.status === 'answered' ? 'answer' : 'technical';
     return { ...renderRag(...results), phase };
+  }
+  if (previous === 'clarification' && result.status === 'not_found') {
+    return { handoff: {
+      title: 'Вопрос без ответа в документации',
+      description: 'После уточнения бот не нашёл подтверждённого ответа в документации. Детали есть в переписке.',
+    } };
   }
   const focused = result.not_found_reply?.endsWith('?') ? result.not_found_reply : undefined;
   const question = result.parts.find((part) => part.status === 'ambiguous' && part.clarification)?.clarification ?? focused;
