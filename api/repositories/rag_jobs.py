@@ -202,7 +202,7 @@ class RagJobs:
                 RagJob.status == "deleting", RagJob.cleanup.contains([{"file_id": str(file_id)}]),
             ).exists())))
 
-    async def cleanup_candidates(self, index_key: str):
+    async def cleanup_candidates(self, index_key: str, active_sources: list[str]):
         async with self.session() as session:
             rows = await session.execute(text("""
                 SELECT j.id AS job_id, j.status = 'deleting' AS deleting, artifact
@@ -210,6 +210,7 @@ class RagJobs:
                 CROSS JOIN LATERAL jsonb_array_elements(j.cleanup) AS items(artifact)
                 LEFT JOIN rag_documents AS d ON d.index_key = j.index_key AND d.source_id = j.source_id
                 WHERE j.index_key = :index_key
+                  AND j.source_id <> ALL(CAST(:active_sources AS text[]))
                   AND COALESCE((artifact->>'retry_at')::timestamptz, '-infinity'::timestamptz) <= now()
                   AND (j.status = 'deleting' OR (
                     (artifact->>'version' IS NOT NULL OR CAST(artifact->>'legacy' AS boolean))
@@ -217,7 +218,7 @@ class RagJobs:
                   ))
                 ORDER BY (artifact->>'retry_at')::timestamptz NULLS FIRST, j.id
                 LIMIT 8
-            """), {"index_key": index_key})
+            """), {"index_key": index_key, "active_sources": active_sources})
             return rows.mappings().all()
 
     async def finish_cleanup(self, job_id: UUID, artifact: dict, *, deleting: bool, success: bool) -> None:
@@ -306,11 +307,15 @@ class RagJobs:
                         await connection.invalidate()
                         raise
 
-    async def claim(self, version: str, index_key: str) -> RagImport | None:
+    async def claim(self, version: str, index_key: str, active_sources: list[str]) -> RagImport | None:
         async with self.session(transaction=True) as session:
             job = await session.scalar(
                 select(RagJob)
-                .where(RagJob.index_key == index_key, RagJob.status.in_(("queued", "running")))
+                .where(
+                    RagJob.index_key == index_key,
+                    RagJob.status.in_(("queued", "running")),
+                    RagJob.source_id.not_in(active_sources),
+                )
                 .order_by(case((RagJob.status == "running", 0), else_=1), RagJob.created_at, RagJob.id)
                 .with_for_update()
                 .limit(1)
@@ -382,12 +387,13 @@ class RagJobs:
             )
             return True
 
-    async def retired(self, index_key: str) -> list[tuple[UUID, str]]:
+    async def retired(self, index_key: str, active_sources: list[str]) -> list[tuple[UUID, str]]:
         active = select(RagDocument.active_version).where(RagDocument.index_key == index_key)
         async with self.session() as session:
             rows = await session.execute(
                 select(RagJob.id, RagJob.version).where(
                     RagJob.index_key == index_key,
+                    RagJob.source_id.not_in(active_sources),
                     RagJob.status.in_(("succeeded", "failed")),
                     RagJob.purged_at.is_(None),
                     RagJob.version.is_not(None),
