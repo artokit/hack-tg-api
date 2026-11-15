@@ -3,7 +3,7 @@ import type { Pool } from 'pg';
 import type { SupportAction } from './keyboards/support.js';
 import type { TelegramAttachment } from './telegram-attachments.js';
 import type { RequestPhase } from './telegram-requests.js';
-import { spamFingerprint } from './telegram-spam.js';
+import { spamFingerprint, telegramSpamPolicy } from './telegram-spam.js';
 
 export interface IncomingMessage {
   text: string;
@@ -70,13 +70,14 @@ export class TelegramStore {
   }
 
   async evaluateSpam(update: PendingUpdate, reported = false): Promise<boolean> {
+    const { evidenceSeconds, exactCopies, burst } = telegramSpamPolicy;
     const result = await this.pool.query(`
       WITH target AS (
         SELECT incoming.sequence, incoming.received_at, incoming.spam_fingerprint, incoming.spam_reported OR $4 AS reported
         FROM bars_telegram_updates AS incoming
         WHERE incoming.bot_id = $1 AND incoming.chat_id = $2 AND incoming.sequence = $3
           AND incoming.spam_fingerprint IS NOT NULL
-          AND incoming.received_at > statement_timestamp() - interval '60 seconds'
+          AND incoming.received_at > statement_timestamp() - ($5::integer * interval '1 second')
           AND NOT EXISTS (
             SELECT 1 FROM bars_telegram_sessions AS session
             WHERE session.bot_id = $1 AND session.chat_id = $2 AND session.spam_blocked_until > incoming.received_at
@@ -86,22 +87,25 @@ export class TelegramStore {
           incoming.spam_reported OR (incoming.sequence = target.sequence AND $4) AS reported
         FROM bars_telegram_updates AS incoming CROSS JOIN target
         WHERE incoming.bot_id = $1 AND incoming.chat_id = $2 AND incoming.spam_fingerprint IS NOT NULL
-          AND incoming.received_at > statement_timestamp() - interval '60 seconds'
+          AND incoming.received_at > statement_timestamp() - ($5::integer * interval '1 second')
           AND incoming.received_at >= coalesce((
             SELECT spam_blocked_until FROM bars_telegram_sessions WHERE bot_id = $1 AND chat_id = $2
           ), '-infinity'::timestamptz)
       ), burst AS (
-        SELECT received_at, count(*) OVER window_10s AS messages,
-          count(*) FILTER (WHERE reported) OVER window_10s AS reports
+        SELECT received_at, count(*) OVER burst_window AS messages,
+          count(*) FILTER (WHERE reported) OVER burst_window AS reports
         FROM recent
-        WINDOW window_10s AS (ORDER BY received_at RANGE BETWEEN interval '10 seconds' PRECEDING AND CURRENT ROW)
+        WINDOW burst_window AS (
+          ORDER BY received_at RANGE BETWEEN ($9::integer * interval '1 second') PRECEDING AND CURRENT ROW
+        )
       ), decision AS (
         SELECT sequence, reported, EXISTS (
           SELECT 1 FROM recent WHERE spam_fingerprint = target.spam_fingerprint
-          HAVING count(*) >= 5 AND count(*) FILTER (WHERE reported) >= 2
+            AND least(recent.received_at, target.received_at) > statement_timestamp() - ($6::integer * interval '1 second')
+          HAVING count(*) >= $7 AND count(*) FILTER (WHERE reported) >= $8
         ) OR EXISTS (
-          SELECT 1 FROM burst WHERE messages >= 30 AND reports >= 2
-            AND received_at BETWEEN target.received_at AND target.received_at + interval '10 seconds'
+          SELECT 1 FROM burst WHERE messages >= $10 AND reports >= $11
+            AND received_at BETWEEN target.received_at AND target.received_at + ($9::integer * interval '1 second')
         ) AS should_ban FROM target
       )
       UPDATE bars_telegram_updates AS incoming SET spam_reported = decision.reported,
@@ -109,7 +113,11 @@ export class TelegramStore {
           THEN coalesce(incoming.spam_ban_requested_at, clock_timestamp()) ELSE incoming.spam_ban_requested_at END
       FROM decision WHERE incoming.sequence = decision.sequence AND ($4 OR decision.should_ban)
       RETURNING decision.should_ban
-    `, [this.botId, update.chat_id, update.sequence, reported]);
+    `, [
+      this.botId, update.chat_id, update.sequence, reported, evidenceSeconds,
+      exactCopies.windowSeconds, exactCopies.minMessages, exactCopies.minReports,
+      burst.windowSeconds, burst.minMessages, burst.minReports,
+    ]);
     return result.rows[0]?.should_ban === true;
   }
 
@@ -132,10 +140,11 @@ export class TelegramStore {
       UPDATE bars_telegram_updates SET spam_fingerprint = NULL, spam_reported = false
       WHERE sequence IN (
         SELECT sequence FROM bars_telegram_updates
-        WHERE bot_id = $1 AND spam_fingerprint IS NOT NULL AND received_at <= clock_timestamp() - interval '60 seconds'
+        WHERE bot_id = $1 AND spam_fingerprint IS NOT NULL
+          AND received_at <= clock_timestamp() - ($2::integer * interval '1 second')
         LIMIT 2000
       )
-    `, [this.botId]);
+    `, [this.botId, telegramSpamPolicy.evidenceSeconds]);
     return result.rowCount ?? 0;
   }
 
