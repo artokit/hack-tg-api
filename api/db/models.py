@@ -79,6 +79,7 @@ class Ticket(Base):
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     external_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     external_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    external_url: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

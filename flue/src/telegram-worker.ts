@@ -7,6 +7,7 @@ import { SupportRequestFinalizer } from './agents/support-request-finalizer.js';
 import { responseSubmission } from './db.js';
 import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employees-api.js';
 import { getSupportKeyboard, type SupportButtons } from './keyboards/support.js';
+import { getSupportTicketUrl } from './support-api.js';
 import { recordDelivery, recordReplyDuration } from './telemetry.js';
 import { isAcknowledgement, isCloseRequest, renderChatReply } from './telegram-chat.js';
 import { type ClosedRequest, type CloseReason, isOperatorRequest, supportRequestClosed } from './support-request.js';
@@ -373,6 +374,13 @@ export class TelegramWorker {
         idempotencyKey: `support-request:${id}:${attempt}`,
       });
       await finalizer.read(receipt);
+      if (outcome.handoff) {
+        const url = await getSupportTicketUrl(id);
+        const chatId = outcome.telegram_chat_id;
+        await this.runReply(chatId, async () => {
+          await this.output.send(`ticket-created:${id}`, chatId, `Заявка создана в Jira.\n${url}`, 'service', false);
+        });
+      }
       await this.requests.finalized(id);
     } catch (error) {
       console.warn('Telegram request finalization failed', id, error instanceof Error ? error.name : 'Error');
