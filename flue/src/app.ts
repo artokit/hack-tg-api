@@ -1,4 +1,4 @@
-import { createTelegramChannel } from '@flue/telegram';
+import { createTelegramChannel, type Update } from '@flue/telegram';
 import { Api } from 'grammy';
 import { Hono } from 'hono';
 
@@ -11,6 +11,7 @@ import { JiraStore } from './jira-store.js';
 import { JiraWorker } from './jira-worker.js';
 import { parseSupportAction, supportActionText } from './keyboards/support.js';
 import { ragModel } from './rag-model.js';
+import type { TelegramAttachment } from './telegram-attachments.js';
 import { TelegramOutput } from './telegram-output.js';
 import { TelegramRequests } from './telegram-requests.js';
 import { TelegramStore } from './telegram-store.js';
@@ -27,6 +28,17 @@ const client = new Api(token, {
 const store = new TelegramStore(pool, botId);
 const jiraStore = new JiraStore(pool, botId);
 export const jiraWorker = new JiraWorker(jiraStore, new TelegramOutput(client, store));
+
+function messageAttachment(message: NonNullable<Update['message']>): TelegramAttachment | undefined {
+  const photo = message.photo?.at(-1);
+  if (photo) return { kind: 'photo', fileId: photo.file_id, size: photo.file_size };
+  const doc = message.document;
+  if (doc) return {
+    kind: 'document', fileId: doc.file_id, size: doc.file_size, mimeType: doc.mime_type,
+    filename: doc.file_name?.split(/[\\/]/u).at(-1)?.replace(/\p{Cc}/gu, '').slice(0, 255) || undefined,
+  };
+}
+
 const channel = createTelegramChannel({
   secretToken: webhookSecret(),
   async webhook({ update }) {
@@ -41,8 +53,10 @@ const channel = createTelegramChannel({
       return { method: 'answerCallbackQuery', callback_query_id: callback.id };
     }
     const message = update.message;
-    const text = message?.text?.trim();
-    if (!message?.from || message.chat.type !== 'private' || !text) return undefined;
+    if (!message?.from || message.chat.type !== 'private') return undefined;
+    const attachment = messageAttachment(message);
+    const text = (attachment ? message.caption : message.text)?.trim() ?? '';
+    if (!text && !attachment) return undefined;
 
     await store.enqueue(update.update_id, message.chat.id, {
       text,
@@ -50,6 +64,7 @@ const channel = createTelegramChannel({
       firstName: message.from.first_name ?? null,
       lastName: message.from.last_name ?? null,
       username: message.from.username ?? null,
+      attachment,
     });
     void worker.scan();
     return undefined;

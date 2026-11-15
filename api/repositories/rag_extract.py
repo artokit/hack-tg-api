@@ -51,12 +51,20 @@ def row_identifiers(cells: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(cell.upper() for cell in cells if POINT_ID.fullmatch(cell)))
 
 
-def extract_blocks(data: bytes, format: str, images: dict[HtmlImageKey, bytes] | None = None) -> list[Block]:
+def extract_blocks(
+    data: bytes, format: str, images: dict[HtmlImageKey, bytes] | None = None, *, include_images: bool = True,
+) -> list[Block]:
     try:
-        blocks = extract_html(data, images) if format == "html" else {
-            "pdf": extract_pdf, "docx": extract_docx, "md": extract_markdown,
-        }[format](data)
-    except (BadZipFile, PDFException, PSEOF, ParserError, XMLSyntaxError, UnicodeError, KeyError) as error:
+        if format == "html":
+            blocks = extract_html(data, images)
+        elif format == "md":
+            blocks = extract_markdown(data)
+        else:
+            blocks = {"pdf": extract_pdf, "docx": extract_docx}[format](data, include_images=include_images)
+    except (
+        BadZipFile, MalformedPDFException, PdfminerException, PDFException, PSEOF,
+        ParserError, XMLSyntaxError, UnicodeError, KeyError,
+    ) as error:
         raise InvalidDocument("invalid_file") from error
     if not blocks:
         raise InvalidDocument("empty_document")
@@ -210,7 +218,7 @@ def telegram_png(data: bytes) -> bytes:
         return buffer.getvalue()
 
 
-def extract_docx(data: bytes) -> list[Block]:
+def extract_docx(data: bytes, *, include_images: bool = True) -> list[Block]:
     with ZipFile(BytesIO(data)) as archive:
         if sum(info.file_size for info in archive.infolist()) > 120 * 1024 * 1024:
             raise InvalidDocument("document_too_large")
@@ -238,6 +246,8 @@ def extract_docx(data: bytes) -> list[Block]:
             else:
                 inherited = next((codes for title in reversed(section) if (codes := leading_identifier(title))), ())
                 blocks.extend(text_blocks(item.text, section=section, identifiers=inherited))
+        if not include_images:
+            continue
         for element in item._element.xpath(".//a:blip"):
             relationship = element.get(qn("r:embed"))
             if relationship:
@@ -479,7 +489,7 @@ def pdf_text_blocks(lines, page_number: int):
         yield flush()
 
 
-def extract_pdf(data: bytes) -> list[Block]:
+def extract_pdf(data: bytes, *, include_images: bool = True) -> list[Block]:
     result: list[Block] = []
     total_images = 0
     with pdfplumber.open(BytesIO(data)) as document:
@@ -501,7 +511,9 @@ def extract_pdf(data: bytes) -> list[Block]:
                 )
             ]
             page_items: list[tuple[float, list[Block]]] = []
-            if not any(re.search(r"[^\W\d_]", line["text"]) for line in lines):
+            if not include_images:
+                page_items.extend(pdf_text_blocks(lines, page.page_number))
+            elif not any(re.search(r"[^\W\d_]", line["text"]) for line in lines):
                 if page.images or page.curves or page.lines or page.rects:
                     page_items.append((0, [Block(
                         "scan", page=page.page_number, box=page.bbox, image=pdf_png(page, page.bbox)
@@ -517,23 +529,7 @@ def extract_pdf(data: bytes) -> list[Block]:
                     [line for line in lines if not any(within(line, box) for box, _ in tables)],
                     page.page_number,
                 ))
-                for image in page.images:
-                    box = (
-                        max(page.bbox[0], image["x0"]), max(page.bbox[1], image["top"]),
-                        min(page.bbox[2], image["x1"]), min(page.bbox[3], image["bottom"]),
-                    )
-                    if box[2] - box[0] >= 80 and box[3] - box[1] >= 35:
-                        page_items.append((box[1], [Block(
-                            "visual", page=page.page_number, box=box, image=pdf_png(page, box),
-                            label=pdf_table_context(lines, box),
-                        )]))
-                table_boxes = [table.bbox for table in detected_tables]
-                diagram = pdf_diagram_box(page, lines, table_boxes)
-                if diagram:
-                    page_items.append((diagram[1], [Block(
-                        "visual", page=page.page_number, box=diagram, image=pdf_png(page, diagram),
-                        label=pdf_table_context(lines, diagram),
-                    )]))
+                page_items.extend(pdf_visual_blocks(page, lines, [table.bbox for table in detected_tables]))
             for _, blocks in sorted(page_items, key=lambda item: item[0]):
                 total_images += sum(len(block.image or b"") for block in blocks)
                 if total_images > MAX_IMAGES_BYTES or len(result) + len(blocks) > MAX_BLOCKS:
@@ -541,6 +537,27 @@ def extract_pdf(data: bytes) -> list[Block]:
                 result.extend(blocks)
             page.close()
     return result
+
+
+def pdf_visual_blocks(page, lines, table_boxes) -> list[tuple[float, list[Block]]]:
+    blocks = []
+    for image in page.images:
+        box = (
+            max(page.bbox[0], image["x0"]), max(page.bbox[1], image["top"]),
+            min(page.bbox[2], image["x1"]), min(page.bbox[3], image["bottom"]),
+        )
+        if box[2] - box[0] >= 80 and box[3] - box[1] >= 35:
+            blocks.append((box[1], [Block(
+                "visual", page=page.page_number, box=box, image=pdf_png(page, box),
+                label=pdf_table_context(lines, box),
+            )]))
+    diagram = pdf_diagram_box(page, lines, table_boxes)
+    if diagram:
+        blocks.append((diagram[1], [Block(
+            "visual", page=page.page_number, box=diagram, image=pdf_png(page, diagram),
+            label=pdf_table_context(lines, diagram),
+        )]))
+    return blocks
 
 
 def in_margin(line, page) -> bool:
