@@ -15,7 +15,7 @@ import { attachmentSummary, loadAttachment } from './telegram-attachments.js';
 import { attachmentReply, chatReply, isCloseRequest, renderChatReply } from './telegram-chat.js';
 import { type ClosedRequest, type CloseReason, isOperatorRequest, type ReplyFlags, type SupportAction, supportAction, supportRequestClosed } from './support-request.js';
 import { renderRag, supportRagReply } from './telegram-rag.js';
-import { type DeliveryResult, TelegramOutput } from './telegram-output.js';
+import { type DeliveryResult, type RichReplyBlock, TelegramOutput } from './telegram-output.js';
 import { type ActiveRequest, type RequestPhase, TelegramRequests } from './telegram-requests.js';
 import { telegramTextDelivery } from './telegram-spam.js';
 import { type DeliveryKind, type PendingUpdate, TelegramStore } from './telegram-store.js';
@@ -231,8 +231,7 @@ export class TelegramWorker {
       const stopTyping = this.output.beginTyping(update.chat_id);
       let deliveryId = `submission:${submissionId}`;
       let replyText = '';
-      let replyHtml: string | undefined;
-      let replyImages: string[] | undefined;
+      let replyBlocks: RichReplyBlock[] | undefined;
       let phase: RequestPhase = 'technical';
       let rich = true;
       let followUp: string | undefined;
@@ -261,8 +260,7 @@ export class TelegramWorker {
           followUp = rendered.followUp;
           if (rendered.offerSupport) buttons = 'operator';
           replyText = rendered.text;
-          replyHtml = rendered.html;
-          replyImages = rendered.images;
+          replyBlocks = rendered.blocks;
           available = rendered.available;
           flags = { hasAnswer: rendered.hasAnswer, hasClarification: rendered.hasClarification };
         } else if (parsedAttachment.success) {
@@ -306,7 +304,7 @@ export class TelegramWorker {
         if (!request) {
           const receipt = await this.output.send(
             deliveryId, update.chat_id, replyText || unavailable, kind, rich && !!replyText,
-            { html: replyHtml, images: replyImages },
+            { blocks: replyBlocks },
           );
           if (kind === 'answer') await this.recordReplyTiming(submissionId, receipt);
           return;
@@ -325,7 +323,7 @@ export class TelegramWorker {
         await this.requests.clearDeadline(active, update.sequence);
         const receipt = await this.deliver(request, deliveryId, replyText || unavailable, {
           sequence: update.sequence, phase: followUp ? undefined : phase,
-          html: replyHtml, rich: rich && !!replyText, kind, images: replyImages, buttons: followUp ? undefined : buttons, flags,
+          blocks: replyBlocks, rich: rich && !!replyText, kind, buttons: followUp ? undefined : buttons, flags,
         });
         if (followUp && receipt.status === 'sent') {
           const next = await this.deliver(request, `${deliveryId}:follow-up`, followUp, {
@@ -477,8 +475,8 @@ export class TelegramWorker {
   private async deliver(
     request: ActiveRequest, id: string, text: string,
     next?: {
-      sequence?: string; phase?: RequestPhase; rich?: boolean; html?: string;
-      kind?: DeliveryKind; images?: string[]; buttons?: SupportButtons; optional?: boolean; flags?: ReplyFlags;
+      sequence?: string; phase?: RequestPhase; rich?: boolean; blocks?: RichReplyBlock[];
+      kind?: DeliveryKind; buttons?: SupportButtons; optional?: boolean; flags?: ReplyFlags;
       replaceMessageId?: number;
     },
   ): Promise<DeliveryResult> {
@@ -486,7 +484,7 @@ export class TelegramWorker {
       ? getSupportKeyboard(next.buttons, request.id, next.sequence) : undefined;
     const receipt = await this.output.send(
       id, request.chat_id, text, next?.kind ?? 'service', next?.rich ?? false,
-      { html: next?.html, images: next?.images, keyboard, replaceMessageId: next?.replaceMessageId },
+      { blocks: next?.blocks, keyboard, replaceMessageId: next?.replaceMessageId },
     );
     if (receipt.status !== 'sent' || !receipt.sent_at) {
       if (next?.sequence && !next.optional) await this.requests.close(request, next.sequence, 'delivery_failed');

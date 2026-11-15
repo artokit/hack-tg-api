@@ -2,6 +2,7 @@ import * as v from 'valibot';
 
 import { delivery, needsRagClarification, type RagSource } from './rag.js';
 import type { ReplyFlags } from './support-request.js';
+import type { RichReplyBlock } from './telegram-output.js';
 import type { RequestPhase } from './telegram-requests.js';
 
 const ragUnavailable = 'Поиск по документации сейчас недоступен. Попробуйте чуть позже.';
@@ -24,7 +25,7 @@ function documentLink({ url: raw, page }: RagSource): string | null {
 
 const indexedSourceId = /^([\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}):\d+(?::\d+:\d+)?$/u;
 
-export type RagMessage = ReplyFlags & { text: string; html: string; available: boolean; images: string[] };
+export type RagMessage = ReplyFlags & { text: string; blocks: RichReplyBlock[]; available: boolean };
 
 export function supportRagReply(values: unknown[], previous: RequestPhase): RagMessage & {
   phase: RequestPhase;
@@ -53,7 +54,7 @@ export function supportRagReply(values: unknown[], previous: RequestPhase): RagM
   const options = offerSupport ? { offerSupport: true as const } : {};
   if (!supported.length) {
     return {
-      text, html: `<p>${escapeHtml(text)}</p>`, available: true, images: [],
+      text, blocks: [{ html: `<p>${escapeHtml(text)}</p>` }], available: true,
       hasAnswer: false, hasClarification: true, phase, ...options,
     };
   }
@@ -71,19 +72,24 @@ function shorten(text: string, length: number): string {
   return text.slice(0, end) + '…';
 }
 
+function documentTitle(raw: string): string {
+  const stem = raw.replace(/\.pdf$/iu, '');
+  const title = stem === raw ? raw : stem.replace(/_+/gu, ' ').trim();
+  return shorten(title || raw, 250);
+}
+
 export function renderRag(...values: unknown[]): RagMessage {
   const responses = values.flatMap((value) => {
     const parsed = v.safeParse(delivery, value);
     return parsed.success && parsed.output.status !== 'unavailable' ? [parsed.output] : [];
   });
   if (!responses.length) return {
-    text: ragUnavailable, html: `<p>${ragUnavailable}</p>`, available: false, images: [],
+    text: ragUnavailable, blocks: [{ html: `<p>${ragUnavailable}</p>` }], available: false,
     hasAnswer: false, hasClarification: false,
   };
 
   const sources = new Map(responses.flatMap((response) => response.sources).map((source) => [source.id, source]));
   const citations = new Map<string, { title: string; link: string | null; sources: Map<string, RagSource> }>();
-  const images = new Map<string, string>();
   const paragraphs: string[] = [];
   let missingEvidence = false;
   let hasAnswer = false;
@@ -101,9 +107,6 @@ export function renderRag(...values: unknown[]): RagMessage {
           continue;
         }
         for (const source of evidence) {
-          if (source.visual && source.image_key && !images.has(source.image_key)) {
-            images.set(source.image_key, source.id);
-          }
           const link = documentLink(source);
           const key = indexedSourceId.exec(source.id)?.[1] ?? source.file_id ?? link ?? source.id;
           let citation = citations.get(key);
@@ -130,39 +133,48 @@ export function renderRag(...values: unknown[]): RagMessage {
     paragraphs.push('По остальным пунктам ответа в базе знаний нет.');
   }
 
-  const html = paragraphs.map((text) => `<p>${escapeHtml(text)}</p>`);
+  const blocks: RichReplyBlock[] = paragraphs.map((text) => ({ html: `<p>${escapeHtml(text)}</p>` }));
   const plain = [...paragraphs];
+  const seenImages = new Set<string>();
   for (const citation of citations.values()) {
-    const title = shorten(citation.title, 250);
+    const title = documentTitle(citation.title);
     const { link } = citation;
     const name = escapeHtml(title);
     const label = link ? `<a href="${escapeHtml(link)}">${name}</a>` : name;
-    html.push(`<p><b>${label}</b></p>`);
+    blocks.push({ html: `<p><b>${label}</b></p>` });
     const entry = link ? [title, link] : [title];
-    const excerpts = new Set<string>();
+    const locations = new Map<string, { quotes: Set<string>; images: string[] }>();
     for (const source of citation.sources.values()) {
-      const location = [
-        source.page ? `стр. ${source.page}` : '',
+      const location = source.page ? `стр. ${source.page}` : [
         shorten(source.section.join(' / '), 200),
         ...source.identifiers,
       ].filter(Boolean).join(' · ');
-      const quote = source.visual ? null : source.quote;
-      const key = JSON.stringify([location, quote]);
-      if (excerpts.has(key)) continue;
-      excerpts.add(key);
-      if (location) {
-        html.push(`<p>${escapeHtml(location)}</p>`);
-        entry.push(location);
+      let group = locations.get(location);
+      if (!group) {
+        group = { quotes: new Set(), images: [] };
+        locations.set(location, group);
       }
-      if (quote) {
-        html.push(`<blockquote>${escapeHtml(quote).replaceAll('\n', '<br>')}</blockquote>`);
-        entry.push(`«${quote}»`);
+      if (source.visual && source.image_key && !seenImages.has(source.image_key)) {
+        seenImages.add(source.image_key);
+        group.images.push(source.id);
       }
+      if (!source.visual && source.quote) group.quotes.add(source.quote);
+    }
+    for (const [location, { quotes, images }] of locations) {
+      if (!quotes.size && !images.length) continue;
+      const headingHtml = location ? `<p><i>${escapeHtml(location)}</i></p>` : undefined;
+      const html = [...quotes].map((quote) =>
+        `<blockquote>${escapeHtml(quote).replaceAll('\n', '<br>')}</blockquote>`,
+      ).join('');
+      blocks.push({ html, headingHtml, images });
+      if (!quotes.size) continue;
+      if (location) entry.push(location);
+      for (const quote of quotes) entry.push(`«${quote}»`);
     }
     plain.push(entry.join('\n'));
   }
   return {
-    text: plain.join('\n\n'), html: html.join(''), available: true, images: [...images.values()],
+    text: plain.join('\n\n'), blocks, available: true,
     hasAnswer, hasClarification,
   };
 }
