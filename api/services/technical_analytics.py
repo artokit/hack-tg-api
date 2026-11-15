@@ -6,9 +6,9 @@ from schemas.technical_analytics import (
     AgentStepRead,
     DeliveryOutcomesRead,
     ModelTokensRead,
+    RequestAnalyticsRead,
     ResponseBreakdownRead,
     ResponseTimeRead,
-    TechnicalAnalyticsRead,
     TechnicalDeliveryRead,
     TechnicalRange,
     TechnicalStageRead,
@@ -40,6 +40,10 @@ def response_count(metric: str, window: str) -> str:
     return f'sum(increase({metric}_count{{stage="total"}}[{window}] anchored))'
 
 
+def token_increase(workload: str, window: str) -> str:
+    return summed_increase("bars_model_tokens_total", window, "workload, model, direction", f'{{workload="{workload}"}}')
+
+
 def workload_tokens(samples: list[MetricSample], workload: str) -> WorkloadTokensRead:
     models: dict[str, dict[str, int]] = {}
     for sample in samples:
@@ -67,12 +71,12 @@ class TechnicalAnalyticsService:
     def __init__(self, repository: PrometheusRepository | None):
         self._repository = repository
 
-    async def read(self, window: TechnicalRange) -> TechnicalAnalyticsRead:
+    async def read(self, window: TechnicalRange) -> RequestAnalyticsRead:
         if self._repository is None:
             raise TechnicalAnalyticsUnavailable
         now = datetime.now(UTC)
         queries = (
-            summed_increase("bars_model_tokens_total", window, "workload, model, direction"),
+            token_increase("chat", window),
             mean_duration(REPLY_DURATION, window, "stage"),
             response_count(REPLY_DURATION, window),
             f'histogram_quantile(0.95, sum by (le) (increase({REPLY_DURATION}_bucket{{stage="total"}}[{window}] anchored)))',
@@ -96,13 +100,11 @@ class TechnicalAnalyticsService:
             for kind, label, samples in (("model", "model", models), ("tool", "gen_ai_tool_name", tools), ("rag", "step", rag))
             for sample in sorted(samples, key=lambda item: item.labels[label])
         ]
-        return TechnicalAnalyticsRead(
+        return RequestAnalyticsRead(
             range=window,
             from_at=now - WINDOWS[window],
             to_at=now,
-            tokens=TechnicalTokensRead(
-                chat=workload_tokens(tokens, "chat"), document_import=workload_tokens(tokens, "document_import"),
-            ),
+            tokens=TechnicalTokensRead(chat=workload_tokens(tokens, "chat")),
             response_time=ResponseTimeRead(
                 sample_count=round(count[0].value) if count else 0,
                 mean_ms=milliseconds(durations_by_stage.get("total")),

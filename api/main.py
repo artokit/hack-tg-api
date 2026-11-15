@@ -5,6 +5,7 @@ from lifespan import lifespan
 from routes.auth import router as auth_router
 from routes.bans import router as bans_router
 from routes.confluence import router as confluence_router
+from routes.document_analytics import router as document_analytics_router
 from routes.employees import private_router as private_employees_router
 from routes.employees import router as employees_router
 from routes.github import router as github_router
@@ -37,6 +38,7 @@ app.include_router(rag_router)
 app.include_router(github_router)
 app.include_router(support_requests_router, include_in_schema=False)
 app.include_router(technical_analytics_router)
+app.include_router(document_analytics_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import AuthSettings, InviteSettings
 from repositories.bans import BanRepository
+from repositories.document_analytics import DocumentAnalyticsRepository
 from repositories.employee_cache import EmployeeCacheRepository
 from repositories.employees import EmployeeRepository
 from repositories.health import HealthRepository
@@ -18,6 +19,7 @@ from repositories.users import UserRepository
 from services.auth import AuthService
 from services.bans import BanService
 from services.confluence import ConfluenceService
+from services.document_analytics import DocumentAnalyticsService
 from services.employees import EmployeeService
 from services.github import GithubService
 from services.health import HealthService
@@ -73,6 +75,12 @@ def get_health_service(session: AsyncSession = Depends(get_async_session)) -> He
 
 def get_technical_analytics_service(request: Request) -> TechnicalAnalyticsService:
     return TechnicalAnalyticsService(request.app.state.prometheus)
+
+
+def get_document_analytics_service(
+    request: Request, session: AsyncSession = Depends(get_async_session),
+) -> DocumentAnalyticsService:
+    return DocumentAnalyticsService(DocumentAnalyticsRepository(session), request.app.state.prometheus)
 
 
 def get_redis(request: Request) -> Redis:
