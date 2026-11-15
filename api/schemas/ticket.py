@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -8,6 +10,7 @@ class TicketCreate(BaseModel):
     description: str
     category: str = "default"
     author_name: str | None = None
+    support_request_id: UUID | None = None
 
 
 class TicketRead(BaseModel):
@@ -21,3 +24,9 @@ class TicketRead(BaseModel):
     category: str
     system: str
     status: str
+    external_id: str | None
+    external_key: str | None
+
+
+class TicketRecipientRead(BaseModel):
+    telegram_chat_id: str

@@ -25,6 +25,12 @@ class RedisSettings(BaseSettings):
     rag_redis_url: SecretStr = SecretStr("redis://127.0.0.1:6380/0")
 
 
+class AnalyticsSettings(BaseSettings):
+    model_config = DatabaseSettings.model_config
+
+    prometheus_url: AnyHttpUrl | None = None
+
+
 class JiraSettings(BaseSettings):
     model_config = DatabaseSettings.model_config
 
@@ -41,6 +47,12 @@ class ConfluenceSettings(BaseSettings):
     confluence_base_url: str = "https://barsdocs.atlassian.net/wiki"
     confluence_email: str = ""
     confluence_api_token: SecretStr = SecretStr("")
+
+
+class GithubSettings(BaseSettings):
+    model_config = DatabaseSettings.model_config
+
+    github_webhook_secret: SecretStr | None = Field(default=None, min_length=32)
 
 
 _jira = JiraSettings()

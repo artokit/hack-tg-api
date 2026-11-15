@@ -3,9 +3,12 @@ from base64 import b64decode
 from binascii import Error as Base64Error
 from collections import Counter
 from io import BytesIO
+from math import ceil
+from threading import Lock
 from zipfile import BadZipFile, ZipFile
 
 import pdfplumber
+from pdfplumber.utils.exceptions import MalformedPDFException, PdfminerException
 from docx import Document
 from docx.oxml.ns import qn
 from docx.table import Table
@@ -16,6 +19,7 @@ from markdown_it import MarkdownIt
 from pdfminer.pdfexceptions import PDFException
 from pdfminer.psparser import PSEOF
 from PIL import Image, UnidentifiedImageError
+from pypdfium2 import PdfiumError
 
 from models.rag import Block, InvalidDocument
 
@@ -30,6 +34,8 @@ MAX_PAGES = 300
 MAX_BLOCKS = 15000
 MAX_BLOCK_CHARS = 2400
 MAX_IMAGES_BYTES = 90 * 1024 * 1024
+PDF_RENDER_LOCK = Lock()
+HtmlImageKey = tuple[str, str, str, str]
 
 
 def identifiers(text: str) -> tuple[str, ...]:
@@ -45,14 +51,17 @@ def row_identifiers(cells: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(cell.upper() for cell in cells if POINT_ID.fullmatch(cell)))
 
 
-def extract_blocks(data: bytes, format: str) -> list[Block]:
+def extract_blocks(data: bytes, format: str, images: dict[HtmlImageKey, bytes] | None = None) -> list[Block]:
     try:
-        blocks = {"pdf": extract_pdf, "docx": extract_docx, "md": extract_markdown, "html": extract_html}[format](data)
+        blocks = extract_html(data, images) if format == "html" else {
+            "pdf": extract_pdf, "docx": extract_docx, "md": extract_markdown,
+        }[format](data)
     except (BadZipFile, PDFException, PSEOF, ParserError, XMLSyntaxError, UnicodeError, KeyError) as error:
         raise InvalidDocument("invalid_file") from error
     if not blocks:
         raise InvalidDocument("empty_document")
-    if len(blocks) > MAX_BLOCKS or sum(len(block.image or b"") for block in blocks) > MAX_IMAGES_BYTES:
+    image_sizes = {id(block.image): len(block.image) for block in blocks if block.image is not None}
+    if len(blocks) > MAX_BLOCKS or sum(image_sizes.values()) > MAX_IMAGES_BYTES:
         raise InvalidDocument("document_too_large")
     return blocks
 
@@ -90,16 +99,18 @@ def table_blocks(rows, table_id: str, *, has_header: bool = True, **location) ->
     ]
 
 
-def html_parts(element: html.HtmlElement):
+def html_parts(element: html.HtmlElement, *, include_images: bool = False):
     inline = [element.text or ""]
     for child in element:
-        if child.tag in (*HTML_HEADINGS, "table", *HTML_CONTAINERS):
+        if child.tag in (*HTML_HEADINGS, "table", *HTML_CONTAINERS) or include_images and (
+            child.tag == "img" or next(child.iterdescendants("img"), None) is not None
+        ):
             yield clean_cell("".join(inline))
             inline.clear()
-            if child.tag in HTML_CONTAINERS:
-                yield from html_parts(child)
-            else:
+            if child.tag in (*HTML_HEADINGS, "table", "img"):
                 yield child
+            else:
+                yield from html_parts(child, include_images=include_images)
         elif child.tag == "br":
             inline.append(" ")
         else:
@@ -112,18 +123,40 @@ def html_text(element: html.HtmlElement) -> str:
     return " ".join(part if isinstance(part, str) else html_text(part) for part in html_parts(element) if part)
 
 
-def extract_html(data: bytes) -> list[Block]:
-    root = html.fragment_fromstring(data.decode("utf-8"), create_parent="div")
+def visible_html(source: str) -> html.HtmlElement:
+    root = html.fragment_fromstring(source, create_parent="div")
     for element in root.xpath(".//script | .//style | .//iframe | .//object | .//svg | .//*[@hidden] | .//comment()"):
         if element.getparent() is not None:
             element.drop_tree()
+    return root
+
+
+def html_image_key(element: html.HtmlElement) -> HtmlImageKey:
+    return (
+        element.get("data-linked-resource-id") or element.get("data-attachment-id") or "",
+        element.get("data-linked-resource-version") or "",
+        element.get("data-media-id") or element.get("data-file-id") or "",
+        element.get("data-image-src") or element.get("src") or "",
+    )
+
+
+def extract_html(data: bytes, images: dict[HtmlImageKey, bytes] | None = None) -> list[Block]:
+    root = visible_html(data.decode("utf-8"))
     blocks: list[Block] = []
     headings: list[tuple[int, str]] = []
-    for position, part in enumerate(html_parts(root)):
+
+    def append_image(element: html.HtmlElement, section: tuple[str, ...]) -> None:
+        if images and (image := images.get(html_image_key(element))):
+            label = clean_cell(element.get("alt") or element.get("title") or "")[:MAX_BLOCK_CHARS]
+            blocks.append(Block("visual", section=section, image=image, label=label))
+
+    for position, part in enumerate(html_parts(root, include_images=bool(images))):
         section = tuple(title for _, title in headings)
         if isinstance(part, str):
             inherited = next((codes for title in reversed(section) if (codes := leading_identifier(title))), ())
             blocks.extend(text_blocks(part, section=section, identifiers=inherited))
+        elif part.tag == "img":
+            append_image(part, section)
         elif part.tag == "table":
             rows = part.xpath("./tr | ./thead/tr | ./tbody/tr | ./tfoot/tr")
             if rows:
@@ -148,6 +181,9 @@ def extract_html(data: bytes) -> list[Block]:
                 "heading", title, section=tuple(heading for _, heading in headings),
                 identifiers=leading_identifier(title),
             ))
+        if images and not isinstance(part, str) and part.tag != "img":
+            for image in part.iterdescendants("img"):
+                append_image(image, tuple(heading for _, heading in headings))
     return blocks
 
 
@@ -156,6 +192,21 @@ def image_png(blob: bytes) -> bytes:
         image.thumbnail((2200, 2200))
         buffer = BytesIO()
         image.convert("RGB").save(buffer, "PNG")
+        return buffer.getvalue()
+
+
+def telegram_png(data: bytes) -> bytes:
+    with Image.open(BytesIO(data)) as original:
+        width, height = original.size
+        if len(data) <= 10_000_000 and width + height <= 10_000 and max(width, height) <= 20 * min(width, height):
+            return data
+        image = original.convert("RGB")
+        image.thumbnail((1700, 1700))
+        width, height = image.size
+        frame = Image.new("RGB", (max(width, ceil(height / 20)), max(height, ceil(width / 20))), "white")
+        frame.paste(image, ((frame.width - width) // 2, (frame.height - height) // 2))
+        buffer = BytesIO()
+        frame.save(buffer, "PNG")
         return buffer.getvalue()
 
 
@@ -254,10 +305,27 @@ def extract_markdown(data: bytes) -> list[Block]:
 
 def pdf_png(page, box) -> bytes:
     target = page.crop(box) if box != page.bbox else page
-    image = target.to_image(resolution=min(330, 2200 * 72 / max(target.width, target.height)))
+    with PDF_RENDER_LOCK:
+        image = target.to_image(resolution=min(330, 2200 * 72 / max(target.width, target.height)))
     buffer = BytesIO()
     image.original.convert("RGB").save(buffer, "PNG")
     return buffer.getvalue()
+
+
+def render_pdf_region(data: bytes, page_number: int, box: tuple[int, int, int, int]) -> bytes:
+    try:
+        with pdfplumber.open(BytesIO(data)) as document:
+            if not 1 <= page_number <= len(document.pages):
+                raise InvalidDocument("invalid_visual_page")
+            page = document.pages[page_number - 1]
+            left, top, right, bottom = (value / 100 for value in box)
+            x0, y0, x1, y1 = page.bbox
+            crop = max(x0, left), max(y0, top), min(x1, right), min(y1, bottom)
+            return pdf_png(page, crop)
+    except (
+        KeyError, MalformedPDFException, OSError, PDFException, PSEOF, PdfminerException, PdfiumError, ValueError,
+    ) as error:
+        raise InvalidDocument("invalid_visual_region") from error
 
 
 def pdf_table_context(lines, box) -> str:

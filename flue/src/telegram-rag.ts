@@ -1,6 +1,7 @@
 import * as v from 'valibot';
 
-import { delivery } from './rag.js';
+import { delivery, needsRagClarification, type RagDelivery } from './rag.js';
+import type { RequestPhase } from './telegram-requests.js';
 
 const ragUnavailable = 'Поиск по документации сейчас недоступен. Попробуй ещё раз чуть позже.';
 
@@ -17,7 +18,41 @@ function originalLink(raw: string | null): string | null {
   return null;
 }
 
-export type RagMessage = { text: string; html: string };
+export type RagMessage = { text: string; html: string; available: boolean; images: string[] };
+
+export function supportRagReply(values: unknown[]): RagMessage & { phase: RequestPhase } {
+  const results = values.flatMap((value) => {
+    const parsed = v.safeParse(delivery, value);
+    return parsed.success ? [parsed.output] : [];
+  });
+  const result = results[results.length - 1];
+  if (result && result.status !== 'unavailable' && needsRagClarification(result)) {
+    return { ...renderClarification(result), phase: 'clarification' };
+  }
+  const phase = !result || result.status === 'unavailable' || result.search_incomplete ? 'technical' : 'answer';
+  return { ...renderRag(...results), phase };
+}
+
+export function supportedRagReply(values: unknown[]): RagMessage | undefined {
+  const supported = values.flatMap((value) => {
+    const parsed = v.safeParse(delivery, value);
+    if (!parsed.success || parsed.output.status === 'unavailable') return [];
+    const parts = parsed.output.parts.filter((part) => part.status === 'supported');
+    return parts.length ? [{ ...parsed.output, status: 'answered', parts }] : [];
+  });
+  return supported.length ? renderRag(...supported) : undefined;
+}
+
+function renderClarification(result: Exclude<RagDelivery, { status: 'unavailable' }>): RagMessage {
+  const focused = result.not_found_reply?.endsWith('?') ? result.not_found_reply : undefined;
+  const question = result.parts.find((part) => part.status === 'ambiguous' && part.clarification)?.clarification
+    ?? focused
+    ?? 'Уточни, пожалуйста, в каком разделе или при каком действии возник вопрос?';
+  const supported = result.parts.filter((part) => part.status === 'supported');
+  if (!supported.length) return { text: question, html: `<p>${escapeHtml(question)}</p>`, available: true, images: [] };
+  const answer = renderRag({ ...result, status: 'answered', parts: supported });
+  return { ...answer, text: `${answer.text}\n\n${question}`, html: `${answer.html}<p>${escapeHtml(question)}</p>` };
+}
 
 function shorten(text: string, length: number): string {
   if (text.length <= length) return text;
@@ -32,7 +67,7 @@ export function renderRag(...values: unknown[]): RagMessage {
     const parsed = v.safeParse(delivery, value);
     return parsed.success && parsed.output.status !== 'unavailable' ? [parsed.output] : [];
   });
-  if (!responses.length) return { text: ragUnavailable, html: `<p>${ragUnavailable}</p>` };
+  if (!responses.length) return { text: ragUnavailable, html: `<p>${ragUnavailable}</p>`, available: false, images: [] };
 
   const sources = new Map(responses.flatMap((response) => response.sources).map((source) => [source.id, source]));
   const labels = new Map<string, number>();
@@ -67,6 +102,7 @@ export function renderRag(...values: unknown[]): RagMessage {
 
   const html = paragraphs.map((text) => `<p>${escapeHtml(text)}</p>`);
   const plain = [...paragraphs];
+  const images = new Map<string, string>();
   for (const [id, ordinal] of labels) {
     const source = sources.get(id)!;
     const title = shorten(source.title, 250);
@@ -82,6 +118,7 @@ export function renderRag(...values: unknown[]): RagMessage {
     html.push(`<p>${ordinal}. <b>${label}</b>${placement}</p>`);
     const entry = [`${ordinal}. ${title}${location ? ` · ${location}` : ''}`, link];
     if (source.visual) {
+      if (source.image_key && !images.has(source.image_key)) images.set(source.image_key, source.id);
       html.push('<p>Описание распознано с изображения.</p>');
       entry.push('Описание распознано с изображения.');
     } else if (source.quote) {
@@ -90,5 +127,5 @@ export function renderRag(...values: unknown[]): RagMessage {
     }
     plain.push(entry.filter(Boolean).join('\n'));
   }
-  return { text: plain.join('\n\n'), html: html.join('') };
+  return { text: plain.join('\n\n'), html: html.join(''), available: true, images: [...images.values()] };
 }

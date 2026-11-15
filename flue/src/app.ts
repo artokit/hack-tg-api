@@ -3,9 +3,14 @@ import { Api } from 'grammy';
 import { Hono } from 'hono';
 
 import { confluenceChannel } from './channels/confluence.js';
+import { createJiraChannel } from './channels/jira.js';
 import { httpUrl, required, webhookSecret } from './config.js';
 import { pool } from './db.js';
+import { JiraStore } from './jira-store.js';
+import { JiraWorker } from './jira-worker.js';
 import { ragModel } from './rag-model.js';
+import { TelegramOutput } from './telegram-output.js';
+import { TelegramRequests } from './telegram-requests.js';
 import { TelegramStore } from './telegram-store.js';
 import { TelegramWorker } from './telegram-worker.js';
 
@@ -18,6 +23,8 @@ const client = new Api(token, {
 });
 
 const store = new TelegramStore(pool, botId);
+const jiraStore = new JiraStore(pool, botId);
+export const jiraWorker = new JiraWorker(jiraStore, new TelegramOutput(client, store));
 const channel = createTelegramChannel({
   secretToken: webhookSecret(),
   async webhook({ update }) {
@@ -37,7 +44,7 @@ const channel = createTelegramChannel({
   },
 });
 
-export const worker = new TelegramWorker(store, client, (chatId) =>
+export const worker = new TelegramWorker(store, new TelegramRequests(pool, botId), client, (chatId) =>
   botId + ':' + channel.instanceId({ type: 'chat', chatId }),
 );
 
@@ -52,6 +59,7 @@ app.get('/health', async (c) => {
 });
 app.route('/channels/telegram', channel.route());
 app.route('/channels/confluence', confluenceChannel);
+app.route('/channels/jira', createJiraChannel(jiraStore));
 app.route('/internal/rag', ragModel);
 
 export default app;

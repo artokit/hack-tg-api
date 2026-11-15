@@ -39,6 +39,33 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "${RAG_REDIS_MAXMEMORY:-64mb}", "--maxmemory-policy", "allkeys-lfu"]
 
+  otel-collector:
+    image: otel/opentelemetry-collector:0.165.0
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./deploy/observability/collector.yaml:/etc/otelcol/config.yaml:ro
+
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-otlp-receiver
+      - --enable-feature=created-timestamp-zero-ingestion
+    volumes:
+      - ./deploy/observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+  tempo:
+    image: grafana/tempo:3.1.1
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/config.yaml", "-target=all"]
+    volumes:
+      - ./deploy/observability/tempo.yaml:/etc/tempo/config.yaml:ro
+      - tempo_data:/var/tempo
+
   api:
     build: ./api
     restart: unless-stopped
@@ -67,7 +94,9 @@ services:
       BOT_API_TOKEN: ${BOT_API_TOKEN:-}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
       RAG_FILES_PUBLIC_URL: ${RAG_FILES_PUBLIC_URL:-https://api.cheremha.ru}
+      PROMETHEUS_URL: http://prometheus:9090
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     healthcheck:
@@ -178,6 +207,13 @@ services:
       CHAT_MODEL: ${CHAT_MODEL:-}
       CHAT_API_KEY: ${CHAT_API_KEY:-}
       CHAT_CONTEXT_WINDOW: ${CHAT_CONTEXT_WINDOW:-8192}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_TIMEOUT: "3000"
+      OTEL_METRIC_EXPORT_INTERVAL: "15000"
+      OTEL_METRIC_EXPORT_TIMEOUT: "5000"
+      OTEL_SERVICE_NAME: bars-flue
+      OTEL_LOGS_EXPORTER: none
     ports:
       - "127.0.0.1:${FLUE_PORT:-3000}:3000"
     healthcheck:
@@ -190,3 +226,5 @@ volumes:
   postgres_flue_data:
   qdrant_data:
   minio_data:
+  prometheus_data:
+  tempo_data:

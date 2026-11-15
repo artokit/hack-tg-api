@@ -6,10 +6,14 @@ from routes.auth import router as auth_router
 from routes.confluence import router as confluence_router
 from routes.employees import private_router as private_employees_router
 from routes.employees import router as employees_router
+from routes.github import router as github_router
 from routes.health import router as health_router
 from routes.invites import private_router as private_invites_router
 from routes.invites import router as invites_router
 from routes.rag import router as rag_router
+from routes.support_requests import router as support_requests_router
+from routes.technical_analytics import router as technical_analytics_router
+from routes.tickets import private_router as private_tickets_router
 from routes.tickets import router as tickets_router
 
 app = FastAPI(
@@ -24,9 +28,13 @@ app.include_router(health_router)
 app.include_router(employees_router)
 app.include_router(private_employees_router)
 app.include_router(tickets_router)
+app.include_router(private_tickets_router, include_in_schema=False)
 app.include_router(invites_router)
 app.include_router(private_invites_router)
 app.include_router(rag_router)
+app.include_router(github_router)
+app.include_router(support_requests_router, include_in_schema=False)
+app.include_router(technical_analytics_router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

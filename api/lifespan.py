@@ -11,26 +11,32 @@ from redis.backoff import NoBackoff
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from config import (
+    AnalyticsSettings,
     AuthSettings,
     ConfluenceSettings,
     DatabaseSettings,
     EmbeddingSettings,
     FileSettings,
+    GithubSettings,
     InviteSettings,
     RedisSettings,
 )
 from db.db import create_engine
 from models.rag import RagImport
 from repositories.confluence import ConfluenceRepository
+from repositories.github import GithubRepository, GithubSyncRepository
 from repositories.rag_cache import RagCache
 from repositories.rag_files import RagFiles
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
 from repositories.rag_model import RagModel
 from repositories.rag_uploads import RagUploads
+from repositories.technical_analytics import PrometheusRepository
 from services.confluence import ConfluenceService
+from services.github import GithubService
 from services.rag import RagOriginals, RagService
 from services.rag_ingest import RagIngest
+from services.ticket_service import run_support_tickets
 
 
 def redact_file_signature(record: logging.LogRecord) -> bool:
@@ -46,9 +52,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.auth_settings = AuthSettings()
     app.state.invite_settings = InviteSettings()
     confluence_settings = ConfluenceSettings()
+    github_settings = GithubSettings()
     embeddings = EmbeddingSettings()
     redis_settings = RedisSettings()
+    analytics = AnalyticsSettings()
     async with AsyncExitStack() as stack:
+        app.state.prometheus = None
+        if analytics.prometheus_url:
+            prometheus_client = await stack.enter_async_context(httpx.AsyncClient(
+                base_url=str(analytics.prometheus_url), timeout=3,
+            ))
+            app.state.prometheus = PrometheusRepository(prometheus_client)
         access_log = logging.getLogger("uvicorn.access")
         access_log.addFilter(redact_file_signature)
         stack.callback(access_log.removeFilter, redact_file_signature)
@@ -56,6 +70,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         stack.push_async_callback(engine.dispose)
         app.state.engine = engine
         app.state.sessions = async_sessionmaker(engine, expire_on_commit=False)
+        ticket_worker = asyncio.create_task(run_support_tickets(app.state.sessions), name="support-tickets")
+        stack.push_async_callback(stop_worker, ticket_worker)
         redis = Redis.from_url(
             redis_settings.redis_url.get_secret_value(),
             decode_responses=True,
@@ -78,6 +94,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         confluence = ConfluenceService(ConfluenceRepository(confluence_client), confluence_settings)
         app.state.confluence_service = confluence
         app.state.rag_service = None
+        app.state.github_service = None
         file_settings = FileSettings()
         http = await stack.enter_async_context(httpx.AsyncClient(timeout=20))
         token = app.state.invite_settings.bot_api_token
@@ -99,11 +116,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             index = RagIndex(http, base_url, key)
             uploads = RagUploads(index.key)
             app.state.rag_service = RagService(jobs, index, files, RagCache(rag_redis))
+            github = GithubRepository(http)
+            if github_settings.github_webhook_secret:
+                app.state.github_service = GithubService(
+                    github, GithubSyncRepository(jobs, index.key),
+                    github_settings.github_webhook_secret.get_secret_value(),
+                )
 
             async def load_import(job: RagImport) -> bytes:
+                if job.source_kind == "github":
+                    return await github.download(job.source_locator or {})
                 return await files.load(job.file_id) if job.file_id else await uploads.load(job)
 
-            importer = RagIngest(jobs, index, model, load_import, uploads.discard, files.delete, confluence)
+            importer = RagIngest(
+                jobs, index, model, load_import, uploads.discard, files, confluence, app.state.github_service,
+            )
             worker = asyncio.create_task(importer.worker(), name="rag-import")
             stack.push_async_callback(stop_worker, worker)
         yield

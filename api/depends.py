@@ -11,14 +11,18 @@ from repositories.employee_cache import EmployeeCacheRepository
 from repositories.employees import EmployeeRepository
 from repositories.health import HealthRepository
 from repositories.invites import InviteRepository
+from repositories.support_requests import SupportRequestRepository
 from repositories.tickets import TicketRepository
 from repositories.users import UserRepository
 from services.auth import AuthService
 from services.confluence import ConfluenceService
 from services.employees import EmployeeService
+from services.github import GithubService
 from services.health import HealthService
 from services.invites import InviteService
 from services.rag import RagOriginals, RagService
+from services.support_requests import SupportRequestService
+from services.technical_analytics import TechnicalAnalyticsService
 from services.ticket_service import TicketService
 
 bearer_scheme = HTTPBearer(scheme_name="UserJWT", bearerFormat="JWT", auto_error=False)
@@ -65,6 +69,10 @@ def get_health_service(session: AsyncSession = Depends(get_async_session)) -> He
     return HealthService(HealthRepository(session))
 
 
+def get_technical_analytics_service(request: Request) -> TechnicalAnalyticsService:
+    return TechnicalAnalyticsService(request.app.state.prometheus)
+
+
 def get_redis(request: Request) -> Redis:
     return request.app.state.redis
 
@@ -80,6 +88,12 @@ def get_ticket_service(
     session: AsyncSession = Depends(get_async_session),
 ) -> TicketService:
     return TicketService(TicketRepository(session))
+
+
+def get_support_request_service(
+    session: AsyncSession = Depends(get_async_session),
+) -> SupportRequestService:
+    return SupportRequestService(SupportRequestRepository(session), TicketRepository(session))
 
 
 def get_invite_settings(request: Request) -> InviteSettings:
@@ -109,6 +123,12 @@ def get_rag_service(request: Request) -> RagService:
     if request.app.state.rag_service is None:
         raise HTTPException(status_code=503, detail="Embedding provider is not configured")
     return request.app.state.rag_service
+
+
+def get_github_service(request: Request) -> GithubService:
+    if request.app.state.github_service is None:
+        raise HTTPException(status_code=503, detail="GitHub RAG sync is not configured")
+    return request.app.state.github_service
 
 
 def get_invite_service(
