@@ -59,7 +59,7 @@ export async function selectVisuals(agent: Agent, parts: VisualPart[], signal: A
   const candidates = parts.map(({ evidence, ...part }) => ({
     ...part, candidates: visualCandidates(evidence, limit),
   })).filter((part) => part.candidates.length);
-  if (!candidates.length) return { images, byPart };
+  if (!candidates.length) return { images, byPart, complete: true };
 
   let ids: (string | null)[];
   try {
@@ -71,9 +71,9 @@ export async function selectVisuals(agent: Agent, parts: VisualPart[], signal: A
   } catch (error) {
     signal.throwIfAborted();
     console.warn('RAG image selection unavailable', error instanceof Error ? error.name : 'Error');
-    return { images, byPart };
+    return { images, byPart, complete: false };
   }
-  if (ids.length !== candidates.length) return { images, byPart };
+  if (ids.length !== candidates.length) return { images, byPart, complete: false };
 
   const chosen = candidates.flatMap(({ index, candidates: options }, position) => {
     const id = ids[position];
@@ -91,5 +91,5 @@ export async function selectVisuals(agent: Agent, parts: VisualPart[], signal: A
     const image_number = imageNumbers.get(id);
     if (image_number !== undefined) byPart.set(index, { id, image_number });
   }
-  return { images, byPart };
+  return { images, byPart, complete: loaded.every(Boolean) && chosen.length === ids.filter((id) => id !== null).length };
 }

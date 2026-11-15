@@ -10,8 +10,9 @@ from depends import get_current_user, get_rag_originals, get_rag_service, get_su
 from models.rag import DocumentTooLarge, InvalidDocument, RagDocumentNotFound, RagUnavailable
 from repositories.rag_files import MAX_DOCUMENT_BYTES
 from schemas.rag import (
-    CONFLUENCE_ID_PATTERN, SOURCE_ID_PATTERN, RagConfluenceImportCreate, RagEvidenceRead, RagFileUploadCreated,
-    RagFileUploadError, RagJobCreated, RagJobPage, RagJobRead, RagSearchRequest, RagUrlRequest,
+    CONFLUENCE_ID_PATTERN, SOURCE_ID_PATTERN, RagAnswerLookup, RagAnswerRead, RagAnswerWrite,
+    RagConfluenceImportCreate, RagEvidenceRead, RagFileUploadCreated, RagFileUploadError, RagJobCreated,
+    RagJobPage, RagJobRead, RagSearchRequest, RagUrlRequest,
 )
 from services.rag import RagOriginals, RagService, UnexpectedDocumentId
 from services.support_requests import SupportRequestService
@@ -208,12 +209,12 @@ async def delete_document(job_id: UUID, service: Service):
     "/internal/rag/search", response_model=list[RagEvidenceRead], dependencies=[Depends(require_bot_token)],
 )
 async def search(
-    query: RagSearchRequest, service: Service,
+    query: RagSearchRequest, service: Service, response: Response,
     requests: Annotated[SupportRequestService, Depends(get_support_request_service)],
 ):
     await requests.record_kb_search(query.request_instance_id)
     try:
-        return await service.search(
+        evidence, snapshot = await service.search(
             query.question, query.exact_id, query.original_question, standalone=query.standalone,
             include_visual=query.include_visual,
         )
@@ -221,6 +222,31 @@ async def search(
         raise HTTPException(status_code=422, detail=str(error)) from error
     except RagUnavailable as error:
         raise HTTPException(status_code=503, detail="Document search temporarily unavailable") from error
+    if snapshot:
+        response.headers["X-RAG-Snapshot"] = snapshot
+    return evidence
+
+
+@router.post(
+    "/internal/rag/answers/lookup", response_model=RagAnswerRead | None, dependencies=[Depends(require_bot_token)],
+)
+async def lookup_answer(
+    query: RagAnswerLookup, service: Service,
+    requests: Annotated[SupportRequestService, Depends(get_support_request_service)],
+):
+    try:
+        answer = await service.cached_answer(query.question)
+    except RagUnavailable as error:
+        raise HTTPException(status_code=503, detail="Answer cache temporarily unavailable") from error
+    if answer is not None:
+        await requests.record_kb_search(query.request_instance_id)
+    return answer
+
+
+@router.put("/internal/rag/answers", status_code=204, dependencies=[Depends(require_bot_token)])
+async def store_answer(query: RagAnswerWrite, service: Service):
+    await service.cache_answer(query.question, query.snapshot, query.answer)
+    return Response(status_code=204)
 
 
 @router.get("/internal/rag/visual/{block_id}", dependencies=[Depends(require_bot_token)])
