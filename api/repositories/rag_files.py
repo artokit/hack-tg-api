@@ -8,7 +8,7 @@ from models.rag import DocumentTooLarge, InvalidDocument, RagUnavailable
 
 
 MAX_DOCUMENT_BYTES = 25 * 1024 * 1024
-DOCUMENT_FORMATS = {"pdf", "docx", "md"}
+DOCUMENT_FORMATS = {"pdf", "docx", "md", "txt"}
 
 
 class RagFiles:

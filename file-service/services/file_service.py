@@ -18,6 +18,7 @@ FILE_TYPES = {
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "md": "text/plain; charset=utf-8",
+    "txt": "text/plain; charset=utf-8",
     "png": "image/png",
 }
 

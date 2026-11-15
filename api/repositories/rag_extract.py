@@ -54,7 +54,7 @@ def row_identifiers(cells: tuple[str, ...]) -> tuple[str, ...]:
 def extract_blocks(data: bytes, format: str, images: dict[HtmlImageKey, bytes] | None = None) -> list[Block]:
     try:
         blocks = extract_html(data, images) if format == "html" else {
-            "pdf": extract_pdf, "docx": extract_docx, "md": extract_markdown,
+            "pdf": extract_pdf, "docx": extract_docx, "md": extract_markdown, "txt": extract_plain_text,
         }[format](data)
     except (BadZipFile, PDFException, PSEOF, ParserError, XMLSyntaxError, UnicodeError, KeyError) as error:
         raise InvalidDocument("invalid_file") from error
@@ -247,6 +247,10 @@ def extract_docx(data: bytes) -> list[Block]:
                     raise InvalidDocument("unsupported_image") from error
                 blocks.append(Block("visual", section=section, image=image))
     return blocks
+
+
+def extract_plain_text(data: bytes) -> list[Block]:
+    return text_blocks(data.decode("utf-8-sig"))
 
 
 def extract_markdown(data: bytes) -> list[Block]:
