@@ -1,7 +1,10 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { Api, GrammyError } from 'grammy';
 
-import type { TelegramStore } from './telegram-store.js';
+import { recordDelivery } from './telemetry.js';
+import type { DeliveryKind, DeliveryStatus, TelegramStore } from './telegram-store.js';
+
+type DeliveryResult = { status: DeliveryStatus; startedAt: number; finishedAt: number };
 
 export function splitReply(text: string): string[] {
   const parts: string[] = [];
@@ -68,27 +71,35 @@ export class TelegramOutput {
     }
   }
 
-  async send(id: string, chatId: string, text: string, markdown: boolean, html?: string): Promise<void> {
-    if (!await this.store.claimDelivery(id)) return;
-    let status: 'sent' | 'failed' | 'unknown';
+  async send(
+    id: string, chatId: string, text: string, kind: DeliveryKind, markdown: boolean, html?: string,
+  ): Promise<DeliveryResult | undefined> {
+    if (!await this.store.claimDelivery(id, kind)) return;
+    const startedAt = Date.now();
+    let status: DeliveryStatus = 'sent';
     try {
-      if (html || markdown) {
-        try {
-          await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }));
-          await this.store.recordDelivery(id, 'sent');
-          return;
-        } catch (error) {
-          if (!(error instanceof GrammyError) || error.error_code !== 400) throw error;
-        }
-      }
-      for (const part of splitReply(text)) {
-        await withRateLimit(() => this.client.sendMessage(chatId, part));
-      }
-      status = 'sent';
+      await this.sendText(chatId, text, markdown, html);
     } catch (error) {
       status = error instanceof GrammyError && error.error_code < 500 ? 'failed' : 'unknown';
       console.warn('Telegram delivery', status, id, error instanceof Error ? error.name : 'Error');
     }
+    const finishedAt = Date.now();
     await this.store.recordDelivery(id, status);
+    recordDelivery(kind, status);
+    return { status, startedAt, finishedAt };
+  }
+
+  private async sendText(chatId: string, text: string, markdown: boolean, html?: string): Promise<void> {
+    if (html || markdown) {
+      try {
+        await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }));
+        return;
+      } catch (error) {
+        if (!(error instanceof GrammyError) || error.error_code !== 400) throw error;
+      }
+    }
+    for (const part of splitReply(text)) {
+      await withRateLimit(() => this.client.sendMessage(chatId, part));
+    }
   }
 }

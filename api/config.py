@@ -25,6 +25,12 @@ class RedisSettings(BaseSettings):
     rag_redis_url: SecretStr = SecretStr("redis://127.0.0.1:6380/0")
 
 
+class AnalyticsSettings(BaseSettings):
+    model_config = DatabaseSettings.model_config
+
+    prometheus_url: AnyHttpUrl | None = None
+
+
 class JiraSettings(BaseSettings):
     model_config = DatabaseSettings.model_config
 

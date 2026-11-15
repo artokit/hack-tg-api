@@ -5,6 +5,7 @@ import { type Api, type SessionFlavor, Composer, Context } from 'grammy';
 import { Bars } from './agents/bars.js';
 import { responseSubmission } from './db.js';
 import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employees-api.js';
+import { recordDelivery, recordReplyDuration } from './telemetry.js';
 import { renderChatReply } from './telegram-chat.js';
 import { renderRag } from './telegram-rag.js';
 import { TelegramOutput } from './telegram-output.js';
@@ -68,7 +69,7 @@ export class TelegramWorker {
     this.scanning = true;
     try {
       if (!this.recovered) {
-        await this.store.recoverDeliveries();
+        for (const kind of await this.store.recoverDeliveries()) recordDelivery(kind, 'unknown');
         this.recovered = true;
       }
       const blockedChats = new Set<string>();
@@ -76,6 +77,7 @@ export class TelegramWorker {
         if (this.processing.has(update.sequence) || blockedChats.has(update.chat_id)) continue;
         this.processing.add(update.sequence);
         try {
+          await this.store.startProcessing(update.sequence);
           await this.admit(update);
         } catch (error) {
           this.processing.delete(update.sequence);
@@ -98,7 +100,7 @@ export class TelegramWorker {
     if (response !== null) {
       this.run(update, async () => {
         if (response) {
-          await this.output.send(`command:${update.update_id}`, update.chat_id, response, false);
+          await this.output.send(`command:${update.update_id}`, update.chat_id, response, 'service', false);
         }
       });
       return;
@@ -122,6 +124,7 @@ export class TelegramWorker {
       let deliveryId = `submission:${submissionId}`;
       let replyText = '';
       let replyHtml: string | undefined;
+      let available = true;
       try {
         const reply = await agent.read(submissionId);
         const responseId = reply.metadata?.telegramResponseId;
@@ -131,6 +134,7 @@ export class TelegramWorker {
           const rendered = renderRag(...ragResults);
           replyText = rendered.text;
           replyHtml = rendered.html;
+          available = rendered.available;
         } else {
           replyText = renderChatReply(...(reply.data.chatAnswer ?? [])) ?? '';
         }
@@ -141,7 +145,18 @@ export class TelegramWorker {
         stopTyping();
       }
       if (!replyText) deliveryId = 'failure:' + await responseSubmission(submissionId);
-      await this.output.send(deliveryId, update.chat_id, replyText || unavailable, !!replyText, replyHtml);
+      const kind = replyText && available ? 'answer' : 'fallback';
+      const delivery = await this.output.send(deliveryId, update.chat_id, replyText || unavailable, kind, !!replyText, replyHtml);
+      if (kind === 'answer' && delivery?.status === 'sent') {
+        try {
+          const timing = await this.store.replyTiming(await responseSubmission(submissionId));
+          if (timing?.received_at && timing.processing_at) {
+            recordReplyDuration(timing.received_at, timing.processing_at, delivery.startedAt, delivery.finishedAt);
+          }
+        } catch (error) {
+          console.warn('Telegram timing unavailable', error instanceof Error ? error.name : 'Error');
+        }
+      }
     });
   }
 

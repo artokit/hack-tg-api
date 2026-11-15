@@ -17,7 +17,7 @@ function originalLink(raw: string | null): string | null {
   return null;
 }
 
-export type RagMessage = { text: string; html: string };
+export type RagMessage = { text: string; html: string; available: boolean };
 
 function shorten(text: string, length: number): string {
   if (text.length <= length) return text;
@@ -32,7 +32,7 @@ export function renderRag(...values: unknown[]): RagMessage {
     const parsed = v.safeParse(delivery, value);
     return parsed.success && parsed.output.status !== 'unavailable' ? [parsed.output] : [];
   });
-  if (!responses.length) return { text: ragUnavailable, html: `<p>${ragUnavailable}</p>` };
+  if (!responses.length) return { text: ragUnavailable, html: `<p>${ragUnavailable}</p>`, available: false };
 
   const sources = new Map(responses.flatMap((response) => response.sources).map((source) => [source.id, source]));
   const labels = new Map<string, number>();
@@ -90,5 +90,5 @@ export function renderRag(...values: unknown[]): RagMessage {
     }
     plain.push(entry.filter(Boolean).join('\n'));
   }
-  return { text: plain.join('\n\n'), html: html.join('') };
+  return { text: plain.join('\n\n'), html: html.join(''), available: true };
 }

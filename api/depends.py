@@ -19,6 +19,7 @@ from services.employees import EmployeeService
 from services.health import HealthService
 from services.invites import InviteService
 from services.rag import RagOriginals, RagService
+from services.technical_analytics import TechnicalAnalyticsService
 from services.ticket_service import TicketService
 
 bearer_scheme = HTTPBearer(scheme_name="UserJWT", bearerFormat="JWT", auto_error=False)
@@ -63,6 +64,10 @@ async def get_current_user(
 
 def get_health_service(session: AsyncSession = Depends(get_async_session)) -> HealthService:
     return HealthService(HealthRepository(session))
+
+
+def get_technical_analytics_service(request: Request) -> TechnicalAnalyticsService:
+    return TechnicalAnalyticsService(request.app.state.prometheus)
 
 
 def get_redis(request: Request) -> Redis:

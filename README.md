@@ -44,6 +44,43 @@ Bucket по умолчанию приватный. Текущий file-service �
 
 Swagger UI доступен на `http://127.0.0.1:8000/docs`, схема OpenAPI — на `http://127.0.0.1:8000/openapi.json`. В Swagger можно посмотреть и вызвать ручки входа, сотрудников, приглашений и проверки состояния API. Порт API в Docker Compose можно изменить через `API_PORT` в `.env`; доступ с хоста открыт только на `127.0.0.1`.
 
+## Техническая аналитика
+
+Обычный `docker compose up -d --build` запускает OpenTelemetry Collector, Prometheus и Tempo. Flue отправляет трассы и метрики в Collector, FastAPI читает агрегаты из Prometheus. Сервисы телеметрии доступны внутри сети Compose. Метрики хранятся 14 дней, трассы — 7 дней. Трассировка Flue использует `content: false`.
+
+Фронт читает `GET /analytics/technical?range=24h` с `Authorization: Bearer <access_token>`. Доступные периоды — `1h`, `24h` (по умолчанию) и `7d`. Границы периода в UTC, все длительности в миллисекундах. Ручка обновляется по мере выгрузки метрик, каждые 15 секунд.
+
+```json
+{
+  "range": "24h",
+  "from_at": "2026-11-14T10:00:00Z",
+  "to_at": "2026-11-15T10:00:00Z",
+  "tokens": {
+    "chat": {"input": 1200, "output": 90, "by_model": [{"model": "example", "input": 1200, "output": 90}]},
+    "document_import": {"input": 0, "output": 0, "by_model": []}
+  },
+  "response_time": {"sample_count": 10, "mean_ms": 1200, "p95_ms": 2100},
+  "stages": [
+    {"stage": "queue", "mean_ms": 20},
+    {"stage": "preparation", "mean_ms": 1100},
+    {"stage": "delivery", "mean_ms": 80}
+  ],
+  "agent_breakdown": [
+    {"kind": "model", "name": "example", "mean_ms": 490},
+    {"kind": "tool", "name": "answer_from_docs", "mean_ms": 610},
+    {"kind": "rag", "name": "search", "mean_ms": 120},
+    {"kind": "rag", "name": "compose", "mean_ms": 470}
+  ],
+  "delivery": {
+    "answer": {"sent": 10, "failed": 1, "unknown": 0},
+    "fallback": {"sent": 1, "failed": 0, "unknown": 0},
+    "service": {"sent": 1, "failed": 0, "unknown": 0}
+  }
+}
+```
+
+Три `stages` складываются в длительность ответа. `agent_breakdown` показывает среднее на один вызов модели, инструмента или шага RAG. Эти замеры могут перекрываться. Расход берётся из модельных вызовов Flue, входные токены включают токены кэша. p95 оценивается по гистограмме Prometheus. При пустой выборке длительности равны `null`, а счётчики — `0`. При недоступности Prometheus API возвращает `503`.
+
 ## Confluence
 
 `GET /confluence/pages?space_id=D1uivli2U08p&page_id=491522` получает страницу через Confluence Cloud REST API v2. Передавайте заголовок `X-Bot-Token` со значением `BOT_API_TOKEN`. В `space_id` можно передать числовой ID пространства или его ключ из URL. При несовпадении пространства и страницы API возвращает `404`.
