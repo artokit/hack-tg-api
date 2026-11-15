@@ -13,11 +13,6 @@ const maxVisualText = 420;
 
 type VisualPart = { index: number; question: string; evidence: Evidence[] };
 
-export function asksAboutAppearance(question: string): boolean {
-  return /(?:^|[^\p{L}])(?:цвет|скрин|подсвеч|выгляд|выделен|пиктограмм|иконк)\p{L}*/iu.test(question)
-    || /(?:кнопк|значок)/iu.test(question) && /(?:расположен|где на форме|где на экране|какого вида)/iu.test(question);
-}
-
 function visualCandidates(evidence: Evidence[], limit: number) {
   const areas = new Map<string, { id: string; title: string; page: number | null; label: string; text: string }>();
   const ranked = evidence.toSorted((a, b) =>

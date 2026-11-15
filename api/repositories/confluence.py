@@ -77,7 +77,7 @@ class ConfluenceRepository:
 
     async def attachment_image(self, page_id: str, attachment_id: str, version: int | None) -> bytes:
         path = f"rest/api/content/{page_id}/child/attachment/{attachment_id}/download"
-        headers = {"Accept": "image/*, application/octet-stream", "Accept-Encoding": "identity"}
+        headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
         params = {"version": str(version)} if version else None
         async with self._client.stream("GET", path, params=params, headers=headers, follow_redirects=False) as response:
             if not response.is_redirect:
@@ -90,7 +90,7 @@ class ConfluenceRepository:
         async with httpx.AsyncClient(timeout=20, trust_env=False) as client:
             async with client.stream(
                 "GET", url.copy_with(host=address),
-                headers={**headers, "Host": url.raw_host.decode("ascii")},
+                headers={"Accept": "*/*", "Accept-Encoding": "identity", "Host": url.raw_host.decode("ascii")},
                 extensions={"sni_hostname": url.raw_host.decode("ascii")},
                 follow_redirects=False,
             ) as response:
