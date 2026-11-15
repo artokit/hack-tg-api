@@ -6,6 +6,8 @@ from contextlib import AsyncExitStack, asynccontextmanager, suppress
 import httpx
 from fastapi import FastAPI
 from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from config import (
@@ -20,6 +22,7 @@ from config import (
 from db.db import create_engine
 from models.rag import RagImport
 from repositories.confluence import ConfluenceRepository
+from repositories.rag_cache import RagCache
 from repositories.rag_files import RagFiles
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
@@ -83,12 +86,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         jobs = RagJobs(app.state.sessions, engine)
         app.state.rag_originals = RagOriginals(files, jobs)
         if embeddings.embedding_base_url:
+            rag_redis = Redis.from_url(
+                redis_settings.rag_redis_url.get_secret_value(),
+                socket_connect_timeout=0.5,
+                socket_timeout=0.5,
+                retry=Retry(NoBackoff(), 0),
+            )
+            stack.push_async_callback(rag_redis.aclose)
             base_url = str(embeddings.embedding_base_url)
             key = embeddings.embedding_api_key.get_secret_value() if embeddings.embedding_api_key else None
             model = RagModel(http, secret)
             index = RagIndex(http, base_url, key)
             uploads = RagUploads(index.key)
-            app.state.rag_service = RagService(jobs, index, files)
+            app.state.rag_service = RagService(jobs, index, files, RagCache(rag_redis))
 
             async def load_import(job: RagImport) -> bytes:
                 return await files.load(job.file_id) if job.file_id else await uploads.load(job)

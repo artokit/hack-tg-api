@@ -5,6 +5,7 @@ import { type Api, type SessionFlavor, Composer, Context } from 'grammy';
 import { Bars } from './agents/bars.js';
 import { responseSubmission } from './db.js';
 import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employees-api.js';
+import { renderChatReply } from './telegram-chat.js';
 import { renderRag } from './telegram-rag.js';
 import { TelegramOutput } from './telegram-output.js';
 import { type PendingUpdate, TelegramStore } from './telegram-store.js';
@@ -131,7 +132,7 @@ export class TelegramWorker {
           replyText = rendered.text;
           replyHtml = rendered.html;
         } else {
-          replyText = reply.text.trim();
+          replyText = renderChatReply(...(reply.data.chatAnswer ?? [])) ?? '';
         }
       } catch (error) {
         if (!(error instanceof AgentRunError)) throw error;

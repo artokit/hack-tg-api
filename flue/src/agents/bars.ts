@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { useDataWriter, useDelivery, useModel, useResponseStart, useTool } from '@flue/runtime';
+import {
+  useAgentFinish, useAgentStart, useDataWriter, useDelivery, useModel, usePersistentState,
+  useResponseStart, useTool,
+} from '@flue/runtime';
 
 import { contextWindow, modelId } from '../provider.js';
 import { answerTool } from '../rag.js';
+import { chatTool } from '../telegram-chat.js';
 import { transientSignal } from '../transient-harness.js';
 
 export function Bars() {
@@ -19,18 +23,36 @@ export function Bars() {
   });
   useResponseStart(() => ({ telegramResponseId: randomUUID() }));
   const writeRag = useDataWriter('ragAnswer');
+  const writeChat = useDataWriter('chatAnswer');
   if (delivery.kind === 'user') {
-    useTool(answerTool(Bars, delivery.body, writeRag));
+    const [status, setStatus] = usePersistentState<'pending' | 'reminded' | 'handled'>(
+      'telegramReplyStatus', 'pending',
+    );
+    useAgentStart(() => setStatus('pending'));
+    useTool(answerTool(Bars, delivery.body, (result) => {
+      writeRag(result);
+      setStatus('handled');
+    }));
+    useTool(chatTool((kind) => {
+      writeChat(kind);
+      setStatus('handled');
+    }));
+    useAgentFinish(({ append }) => {
+      if (status !== 'pending') return;
+      setStatus('reminded');
+      append({ kind: 'signal', type: 'reply_tool_required', body: 'Вызови один подходящий инструмент ответа.' });
+    });
   }
 
-  return `Ты помощник БАРС Груп. Отвечай кратко и на языке пользователя.
-Помогай с общими вопросами и учитывай контекст диалога.
-Для вопросов о внутренних правилах и документации БАРС, интерфейсе БАРС-Офиса,
-бизнес-процессах, реестрах и конкретных пунктах вызывай answer_from_docs. Повторно вызывай
-тулзу для уточнений к таким вопросам, передавая самостоятельные вопросы в questions.
-На приветствия и общие вопросы отвечай напрямую. Не отвечай по внутренним сведениям по памяти.
-Не выдумывай внутренние правила, контакты и ссылки.
-Используй Markdown для списков, ссылок и блоков кода, когда это помогает прочитать ответ.`;
+  return `Ты помощник БАРС Груп. Выбери инструмент для ответа пользователю.
+Если пользователь просит написать, исправить или сгенерировать код либо решить задачу по
+программированию, вызови reply_in_chat с kind=coding_task. Пример такой просьбы: «напиши бабл сорт».
+Для поиска инструкции, готового примера из документации или ответа на вопрос вызывай answer_from_docs.
+Ищи и по общим темам, например когда просят помочь настроить принтер.
+Для уточнения или составного вопроса учитывай историю диалога и передавай самостоятельные вопросы
+в questions, сохраняя точные названия и ID. Включай в вопросы только сведения, нужные для поиска ответа.
+Для приветствия, благодарности, прощания или вопроса о твоих возможностях используй reply_in_chat.
+Если сообщение начинается с приветствия, выбери инструмент по основной просьбе пользователя.`;
 }
 
 Bars.durability = { timeoutMs: 90_000 };

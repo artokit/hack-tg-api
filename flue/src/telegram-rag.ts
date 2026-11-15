@@ -37,18 +37,33 @@ export function renderRag(...values: unknown[]): RagMessage {
   const sources = new Map(responses.flatMap((response) => response.sources).map((source) => [source.id, source]));
   const labels = new Map<string, number>();
   const paragraphs: string[] = [];
-  for (const item of responses.flatMap((response) => response.parts)) {
-    if (item.status === 'supported') {
-      const ids = item.source_ids.filter((id) => sources.has(id));
-      if (!ids.length || !item.statement.trim()) continue;
-      for (const id of ids) if (!labels.has(id)) labels.set(id, labels.size + 1);
-      paragraphs.push(`${item.statement} ${ids.map((id) => `[${labels.get(id)}]`).join(' ')}`);
-    } else {
-      paragraphs.push(item.clarification ||
-        `По вопросу «${shorten(item.question, 170)}» в базе нет подтверждения.`);
+  let missingEvidence = false;
+  for (const response of responses) {
+    if (response.status === 'not_found' && response.not_found_reply) {
+      paragraphs.push(response.not_found_reply);
+      continue;
+    }
+    for (const item of response.parts) {
+      if (item.status === 'supported') {
+        const ids = item.source_ids.filter((id) => sources.has(id));
+        if (!ids.length || !item.statement.trim()) {
+          missingEvidence = true;
+          continue;
+        }
+        for (const id of ids) if (!labels.has(id)) labels.set(id, labels.size + 1);
+        paragraphs.push(`${item.statement} ${ids.map((id) => `[${labels.get(id)}]`).join(' ')}`);
+      } else if (item.clarification.trim()) {
+        paragraphs.push(item.clarification);
+      } else {
+        missingEvidence = true;
+      }
     }
   }
-  if (!paragraphs.length) paragraphs.push('В базе документации не нашлось подтверждённого ответа.');
+  if (!paragraphs.length) {
+    paragraphs.push('В базе знаний не нашлось ответа.');
+  } else if (missingEvidence) {
+    paragraphs.push('По остальным пунктам ответа в базе знаний нет.');
+  }
 
   const html = paragraphs.map((text) => `<p>${escapeHtml(text)}</p>`);
   const plain = [...paragraphs];
