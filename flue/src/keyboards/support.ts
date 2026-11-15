@@ -15,6 +15,12 @@ export const supportActionText = {
   c: 'Нет, продолжим',
 } as const;
 
+const buttonLabels = {
+  feedback: { y: 'Да', n: 'Нет' },
+  close: { y: 'Закрыть', c: 'Продолжить' },
+  operator: { s: supportActionText.s },
+} as const;
+
 export function parseSupportAction(data?: string): SupportAction | undefined {
   const match = /^bars:([ynsc]):([\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}):(\d{1,19})$/u.exec(data ?? '');
   if (!match) return;
@@ -24,9 +30,8 @@ export function parseSupportAction(data?: string): SupportAction | undefined {
 
 export function getSupportKeyboard(buttons: SupportButtons, requestId: string, sequence: string): InlineKeyboard {
   const keyboard = new InlineKeyboard();
-  const actions = buttons === 'operator' ? ['s'] as const : ['y', buttons === 'close' ? 'c' : 'n'] as const;
-  for (const action of actions) {
-    keyboard.text(supportActionText[action], `bars:${action}:${requestId}:${sequence}`);
+  for (const [action, label] of Object.entries(buttonLabels[buttons])) {
+    keyboard.text(label, `bars:${action}:${requestId}:${sequence}`);
   }
   return keyboard;
 }
