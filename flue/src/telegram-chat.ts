@@ -32,7 +32,7 @@ export function chatTool(write: (reply: ChatReply) => void) {
 export function skipReplyTool(write: (reply: ChatReply) => void) {
   return defineTool({
     name: 'skip_reply',
-    description: 'Заверши обработку без сообщения в чат, если это отдельная благодарность, бессодержательная реплика или точный повтор уже обработанного вопроса без новых деталей.',
+    description: 'Заверши обработку без сообщения в чат, если реплика не требует ответа или подтверждения закрытия, например это бессодержательная реплика или точный повтор уже обработанного вопроса без новых деталей.',
     input: v.object({}),
     run() {
       write({ kind: 'skip' });

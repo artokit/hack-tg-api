@@ -22,6 +22,7 @@ import { type DeliveryKind, type PendingUpdate, TelegramStore } from './telegram
 
 const unavailable = 'Сейчас не получается ответить. Попробуйте чуть позже.';
 const feedbackQuestion = 'Удалось решить вопрос?';
+const closeQuestion = 'Закрыть обращение?';
 const detailsQuestion = 'Что осталось нерешённым?';
 const closedAnswer = 'Обращение закрыто.';
 const handoffAnswer = 'Передаю вопрос специалисту.';
@@ -190,10 +191,7 @@ export class TelegramWorker {
     }
 
     const { attachment, text } = update.payload;
-    let message: DeliveredMessageInput = attachment || update.payload.supportAction ? text : {
-      kind: 'signal', type: telegramTextDelivery, tagName: 'telegram_message', body: text,
-      attributes: { update_id: update.update_id },
-    };
+    let message: DeliveredMessageInput = text;
     if (attachment && update.submission_id === null) {
       const loaded = await loadAttachment(this.telegram, attachment, text);
       if ('error' in loaded) {
@@ -211,6 +209,15 @@ export class TelegramWorker {
     const agent = init(Bars, { id });
     let submission = update.submission_id;
     if (submission === null) {
+      if (!attachment && !update.payload.supportAction) {
+        message = {
+          kind: 'signal', type: telegramTextDelivery, tagName: 'telegram_message', body: text,
+          attributes: {
+            update_id: update.update_id,
+            ...(request && !request.conversation_only ? { request_phase: request.phase } : {}),
+          },
+        };
+      }
       const receipt = await agent.dispatch({
         message,
         idempotencyKey: `telegram:${update.update_id}`,
@@ -346,7 +353,16 @@ export class TelegramWorker {
   }
 
   private async applyAction(update: PendingUpdate, request: ActiveRequest, action: SupportAction): Promise<void> {
-    if (request.latest_sequence !== update.sequence) return;
+    if (request.latest_sequence !== update.sequence || request.conversation_only) return;
+    if (action.action === 'offer_close') {
+      if (request.phase !== 'close_confirmation') {
+        await this.deliver(request, `offer-close:${update.update_id}`, closeQuestion, {
+          sequence: update.sequence, phase: 'close_confirmation', buttons: 'close', optional: true,
+          flags: { hasAnswer: false, hasClarification: false },
+        });
+      }
+      return;
+    }
     if (await this.requests.close(request, update.sequence, action.reason)) {
       await this.output.send(`closed:${update.update_id}`, update.chat_id,
         'Обращение закрыто. Следующий вопрос начнёт новое обращение.', 'service', false);
