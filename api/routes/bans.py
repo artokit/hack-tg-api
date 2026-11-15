@@ -21,4 +21,5 @@ async def create_ban(data: BanCreate, service: BanService = Depends(get_ban_serv
         telegram_id=data.telegram_id,
         ban_level=state.ban_level,
         retry_after_seconds=state.retry_after_seconds,
+        expires_at_ms=state.expires_at_ms,
     )
