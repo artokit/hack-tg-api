@@ -113,14 +113,3 @@ async def stop_worker(worker: asyncio.Task) -> None:
     worker.cancel()
     with suppress(asyncio.CancelledError):
         await worker
-
-
-@asynccontextmanager
-async def internal_lifespan(app: FastAPI) -> AsyncIterator[None]:
-    settings = DatabaseSettings()
-    engine = create_engine(settings.database_url.get_secret_value())
-    app.state.sessions = async_sessionmaker(engine, expire_on_commit=False)
-    try:
-        yield
-    finally:
-        await engine.dispose()

@@ -21,14 +21,3 @@ class TicketRead(BaseModel):
     category: str
     system: str
     status: str
-    external_id: str | None
-    external_key: str | None
-
-
-class TicketAttachmentRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    issue_id_or_key: str
-    comment_id: str
-    filename: str
-    public: bool
