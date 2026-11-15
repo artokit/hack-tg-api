@@ -1,6 +1,7 @@
 import * as v from 'valibot';
 
 import { delivery, needsRagClarification, type RagSource } from './rag.js';
+import type { ReplyFlags } from './support-request.js';
 import type { RequestPhase } from './telegram-requests.js';
 
 const ragUnavailable = 'Поиск по документации сейчас недоступен. Попробуйте чуть позже.';
@@ -18,7 +19,7 @@ function originalLink(raw: string | null): string | null {
   return null;
 }
 
-export type RagMessage = { text: string; html: string; available: boolean; images: string[] };
+export type RagMessage = ReplyFlags & { text: string; html: string; available: boolean; images: string[] };
 
 export function supportRagReply(values: unknown[], previous: RequestPhase): RagMessage & {
   phase: RequestPhase;
@@ -46,7 +47,10 @@ export function supportRagReply(values: unknown[], previous: RequestPhase): RagM
     : question;
   const options = offerSupport ? { offerSupport: true as const } : {};
   if (!supported.length) {
-    return { text, html: `<p>${escapeHtml(text)}</p>`, available: true, images: [], phase, ...options };
+    return {
+      text, html: `<p>${escapeHtml(text)}</p>`, available: true, images: [],
+      hasAnswer: false, hasClarification: true, phase, ...options,
+    };
   }
   return {
     ...renderRag({ ...result, status: 'answered', parts: supported }),
@@ -67,12 +71,17 @@ export function renderRag(...values: unknown[]): RagMessage {
     const parsed = v.safeParse(delivery, value);
     return parsed.success && parsed.output.status !== 'unavailable' ? [parsed.output] : [];
   });
-  if (!responses.length) return { text: ragUnavailable, html: `<p>${ragUnavailable}</p>`, available: false, images: [] };
+  if (!responses.length) return {
+    text: ragUnavailable, html: `<p>${ragUnavailable}</p>`, available: false, images: [],
+    hasAnswer: false, hasClarification: false,
+  };
 
   const sources = new Map(responses.flatMap((response) => response.sources).map((source) => [source.id, source]));
   const citations = new Map<string, { ordinal: number; source: RagSource; quotes: Set<string> }>();
   const paragraphs: string[] = [];
   let missingEvidence = false;
+  let hasAnswer = false;
+  let hasClarification = false;
   for (const response of responses) {
     if (response.status === 'not_found' && response.not_found_reply) {
       paragraphs.push(response.not_found_reply);
@@ -99,8 +108,10 @@ export function renderRag(...values: unknown[]): RagMessage {
           labels.add(`[${citation.ordinal}]`);
         }
         paragraphs.push(`${item.statement} ${[...labels].join(' ')}`);
+        hasAnswer = true;
       } else if (item.clarification.trim()) {
         paragraphs.push(item.clarification);
+        hasClarification = true;
       } else {
         missingEvidence = true;
       }
@@ -139,5 +150,8 @@ export function renderRag(...values: unknown[]): RagMessage {
     }
     plain.push(entry.filter(Boolean).join('\n'));
   }
-  return { text: plain.join('\n\n'), html: html.join(''), available: true, images: [...images.values()] };
+  return {
+    text: plain.join('\n\n'), html: html.join(''), available: true, images: [...images.values()],
+    hasAnswer, hasClarification,
+  };
 }

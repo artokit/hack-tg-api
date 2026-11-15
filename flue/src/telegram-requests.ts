@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { Pool } from 'pg';
 
-import { type ClosedRequest, type CloseReason, type HandoffDraft, resolution } from './support-request.js';
+import { type ClosedRequest, type CloseReason, type HandoffDraft, type ReplyFlags, resolution } from './support-request.js';
 import type { PendingUpdate } from './telegram-store.js';
 
 export type RequestPhase =
@@ -43,9 +43,10 @@ export class TelegramRequests {
     const result = await this.pool.query<ActiveRequest>(`
       WITH current_request AS (
         INSERT INTO bars_telegram_requests (
-          id, bot_id, chat_id, instance_id, opened_at, phase, latest_sequence, tracks_model_cost
+          id, bot_id, chat_id, instance_id, opened_at, phase, latest_sequence, tracks_model_cost,
+          tracks_response_metrics
         )
-        VALUES ($1, $2, $3, $4, $5, 'technical', $6, true)
+        VALUES ($1, $2, $3, $4, $5, 'technical', $6, true, true)
         ON CONFLICT (bot_id, chat_id) WHERE closed_at IS NULL DO UPDATE
         SET latest_sequence = greatest(bars_telegram_requests.latest_sequence, EXCLUDED.latest_sequence)
         RETURNING id, chat_id, instance_id, latest_sequence, phase, phase_sent_at
@@ -66,14 +67,17 @@ export class TelegramRequests {
 
   async append(
     request: ActiveRequest, key: string, role: 'user' | 'assistant', at: Date,
-    text: string | null, updateSequence?: string,
+    text: string | null, updateSequence?: string, flags?: ReplyFlags,
   ): Promise<void> {
     await this.pool.query(`
-      INSERT INTO bars_telegram_request_events (request_id, event_key, role, occurred_at, text, update_sequence)
-      SELECT id, $2, $3, $4, $5, $6 FROM bars_telegram_requests
+      INSERT INTO bars_telegram_request_events (
+        request_id, event_key, role, occurred_at, text, update_sequence, has_answer, has_clarification
+      )
+      SELECT id, $2, $3, $4, $5, $6, $8, $9 FROM bars_telegram_requests
       WHERE id = $1 AND bot_id = $7 AND closed_at IS NULL
       ON CONFLICT (request_id, event_key) DO NOTHING
-    `, [request.id, key, role, at, text, updateSequence ?? null, this.botId]);
+    `, [request.id, key, role, at, text, updateSequence ?? null, this.botId,
+      flags?.hasAnswer ?? null, flags?.hasClarification ?? null]);
   }
 
   async advance(

@@ -7,7 +7,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    Float,
     ForeignKey,
     Index,
     Integer,
@@ -99,15 +98,6 @@ class Invite(Base):
     count_of_use: Mapped[int] = mapped_column(Integer, default=1)
     first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
-
-class AwMockSample(Base):
-    __tablename__ = "aw_mock_samples"
-
-    id: Mapped[str] = mapped_column(String(100), primary_key=True)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
-    series: Mapped[str] = mapped_column(String(50))
-    value: Mapped[float] = mapped_column(Float)
 
 
 class RagDocument(Base):

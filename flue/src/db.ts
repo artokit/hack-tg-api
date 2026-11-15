@@ -111,7 +111,8 @@ export default {
         outcome jsonb,
         finalizer_attempt integer NOT NULL DEFAULT 0,
         finalizer_due_at timestamptz,
-        finalized_at timestamptz
+        finalized_at timestamptz,
+        tracks_response_metrics boolean NOT NULL DEFAULT false
       );
 
       CREATE UNIQUE INDEX IF NOT EXISTS bars_telegram_active_request
@@ -140,6 +141,8 @@ export default {
         text text,
         update_sequence bigint REFERENCES bars_telegram_updates (sequence),
         occurred_at timestamptz NOT NULL,
+        has_answer boolean,
+        has_clarification boolean,
         UNIQUE (request_id, event_key),
         CHECK (text IS NOT NULL OR update_sequence IS NOT NULL)
       );
@@ -159,5 +162,11 @@ export default {
       CREATE INDEX IF NOT EXISTS bars_jira_pending_comments
         ON bars_jira_comments (bot_id, next_attempt_at) WHERE status = 'queued';
     `);
+    try {
+      await pool.query('SELECT tracks_response_metrics FROM bars_telegram_requests LIMIT 0');
+      await pool.query('SELECT has_answer, has_clarification FROM bars_telegram_request_events LIMIT 0');
+    } catch (error) {
+      throw new Error('Apply API migrations before starting Flue with response metrics', { cause: error });
+    }
   },
 };

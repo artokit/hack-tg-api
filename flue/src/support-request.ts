@@ -6,6 +6,11 @@ export const supportRequestCategory = v.picklist([
 ]);
 export type SupportRequestCategory = v.InferOutput<typeof supportRequestCategory>;
 
+export interface ReplyFlags {
+  hasAnswer: boolean;
+  hasClarification: boolean;
+}
+
 export const handoffDraft = v.object({
   title: v.pipe(v.string(), v.trim(), v.minLength(5), v.maxLength(255)),
   description: v.pipe(v.string(), v.trim(), v.minLength(1)),
@@ -23,7 +28,7 @@ export type SupportAction = v.InferOutput<typeof supportAction>;
 
 const closeReason = v.picklist([
   'thanks', 'user_closed', 'feedback_timeout', 'clarification_timeout', 'details_timeout',
-  'technical_timeout', 'reset', 'delivery_failed', 'spam', ...requestedCloseReason.options, ...handoffReason.options,
+  'technical_timeout', 'delivery_failed', 'spam', ...requestedCloseReason.options, ...handoffReason.options,
 ]);
 export type CloseReason = v.InferOutput<typeof closeReason>;
 
