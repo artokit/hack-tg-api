@@ -214,31 +214,32 @@ location = /flue/channels/confluence/webhook {
 
 ## Синхронизация GitHub с Qdrant
 
-`POST /webhooks/github` принимает события репозитория [skyywhyy/barsdocs](https://github.com/skyywhyy/barsdocs).
-Событие `ping` запускает первичный импорт, последующие `push` в `main` сверяют каталог ветки.
-Воркер RAG загружает новые и изменённые `.md`, `.docx` и `.pdf` до 25 МиБ и публикует их
-в Qdrant. При обновлении файла сохраняется его `job_id`. Удалённые файлы исчезают из
-поиска, переименованные индексируются под новым путём. Бот находит материалы через штатный поиск и ссылается на проиндексированную
-версию файла в GitHub.
+Канал Flue `POST /channels/github/webhook` проверяет подпись событий репозитория
+[skyywhyy/barsdocs](https://github.com/skyywhyy/barsdocs) и вызывает `POST /internal/rag/github/sync`
+с `X-Bot-Token`. API сохраняет запрос в очередь PostgreSQL. Событие `ping` запускает первичный
+импорт, последующие `push` в `main` сверяют каталог ветки. Воркер API загружает новые и
+изменённые `.md`, `.docx` и `.pdf` до 25 МиБ и публикует их в Qdrant. При обновлении файла
+по тому же пути сохраняется его `job_id`. Удалённые файлы исчезают из поиска, переименованные
+индексируются под новым путём. Бот ссылается на проиндексированную версию файла в GitHub.
 
 1. Задайте в корневом `.env` `GITHUB_WEBHOOK_SECRET` (отдельная случайная строка от 32 символов)
-   и настройте провайдер эмбеддингов (`EMBEDDING_BASE_URL`, при необходимости `EMBEDDING_API_KEY`).
-   На сервере выполните `docker compose up -d --build api`. Контейнер применит миграции при запуске.
-2. Откройте `https://api.cheremha.ru/webhooks/github` для HTTPS-запросов. Если в Nginx нужны
-   отдельные правила для маршрутов, добавьте в HTTPS-блок следующий блок и подставьте
-   хостовый `API_PORT`, если он отличается от `8000`.
+   для Flue. Укажите общий `BOT_API_TOKEN` для API и Flue и настройте провайдер эмбеддингов
+   (`EMBEDDING_BASE_URL`, при необходимости `EMBEDDING_API_KEY`). На сервере выполните
+   `docker compose up -d --build api flue`. API применит миграции при запуске.
+2. Добавьте маршрут в HTTPS-блок Nginx для `api.cheremha.ru`. Подставьте хостовый `FLUE_PORT`,
+   если он отличается от `3000`.
 
    ```nginx
-   location = /webhooks/github {
+   location = /flue/channels/github/webhook {
        client_max_body_size 25m;
-       proxy_pass http://127.0.0.1:8000;
+       proxy_pass http://127.0.0.1:3000/channels/github/webhook;
    }
    ```
 
-3. В [Settings → Webhooks](https://github.com/skyywhyy/barsdocs/settings/hooks) добавьте
-   или активируйте вебхук. В `Payload URL` укажите `https://api.cheremha.ru/webhooks/github`,
+3. В [Settings → Webhooks](https://github.com/skyywhyy/barsdocs/settings/hooks) создайте или
+   обновите вебхук. В `Payload URL` укажите `https://api.cheremha.ru/flue/channels/github/webhook`,
    в `Content type` — `application/json`, в `Secret` — значение `GITHUB_WEBHOOK_SECRET`.
-   Оставьте проверку SSL включённой и выберите событие `push`.
+   Оставьте проверку SSL включённой, выберите событие `push` и активируйте вебхук.
 4. Проверьте `202` у `ping` в `Recent Deliveries`. Для уже созданного вебхука можно
    повторить доставку `ping`. Код `202` означает, что запрос на синхронизацию сохранён.
    Успешную индексацию каждого документа подтверждает статус `succeeded` в `GET /rag/jobs`.

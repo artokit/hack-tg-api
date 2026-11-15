@@ -75,7 +75,7 @@ class RagIngest:
         self, jobs: RagJobs, index: RagIndex, model: RagModel,
         load: Callable[[RagImport], Awaitable[bytes]], discard_upload: Callable[[UUID], None],
         delete_file: Callable[[UUID], Awaitable[None]],
-        confluence: ConfluenceService, github: GithubService | None = None,
+        confluence: ConfluenceService, github: GithubService,
     ):
         self.jobs = jobs
         self.index = index
@@ -93,8 +93,7 @@ class RagIngest:
                 async with self.jobs.worker_lock(self.index.key) as locked:
                     if locked:
                         while True:
-                            if self.github:
-                                await self.github.sync_pending()
+                            await self.github.sync_pending()
                             now = asyncio.get_running_loop().time()
                             if now >= next_cleanup:
                                 await self.purge_artifacts()
