@@ -56,7 +56,8 @@ export class TelegramRequests {
         UPDATE bars_telegram_updates
         SET request_id = current_request.id, instance_id = current_request.instance_id,
           request_phase = CASE
-            WHEN current_request.phase = 'feedback' AND received_at < current_request.phase_sent_at THEN 'answer'
+            WHEN current_request.phase = 'feedback' AND NOT $7::boolean
+              AND received_at < current_request.phase_sent_at THEN 'answer'
             WHEN current_request.phase = 'answer' AND current_request.phase_sent_at IS NULL THEN 'technical'
             ELSE current_request.phase END
         FROM current_request WHERE sequence = $6
@@ -64,7 +65,7 @@ export class TelegramRequests {
       )
       SELECT id, chat_id, instance_id, latest_sequence, phase_sequence, pinned.phase, conversation_only
       FROM current_request CROSS JOIN pinned
-    `, [id, this.botId, update.chat_id, `${instancePrefix}:${id}`, update.received_at, update.sequence]);
+    `, [id, this.botId, update.chat_id, `${instancePrefix}:${id}`, update.received_at, update.sequence, !!update.payload.supportAction]);
     return result.rows[0];
   }
 
