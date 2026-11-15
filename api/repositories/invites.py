@@ -1,6 +1,7 @@
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,20 +16,30 @@ class InviteRepository:
     async def get_by_id(self, invite_id: UUID) -> Invite | None:
         return await self._session.get(Invite, invite_id)
 
-    async def get_all(self, offset: int, limit: int) -> list[Invite]:
-        result = await self._session.scalars(
-            select(Invite).order_by(Invite.id).offset(offset).limit(limit)
+    async def get_active_page(
+        self, offset: int, limit: int, active_at: datetime
+    ) -> tuple[list[Invite], int]:
+        active = or_(Invite.expires_at.is_(None), Invite.expires_at > active_at)
+        items = await self._session.scalars(
+            select(Invite).where(active).order_by(Invite.id).offset(offset).limit(limit)
         )
-        return list(result)
-
-    async def count(self) -> int:
-        return await self._session.scalar(select(func.count()).select_from(Invite))
+        total = await self._session.execute(
+            select(func.count()).select_from(Invite).where(active)
+        )
+        return list(items), total.scalar_one()
 
     async def create(
-        self, count_of_use: int, first_name: str | None, last_name: str | None
+        self,
+        count_of_use: int,
+        first_name: str | None,
+        last_name: str | None,
+        expires_at: datetime,
     ) -> Invite:
         invite = Invite(
-            count_of_use=count_of_use, first_name=first_name, last_name=last_name
+            count_of_use=count_of_use,
+            first_name=first_name,
+            last_name=last_name,
+            expires_at=expires_at,
         )
         self._session.add(invite)
         await self._session.commit()

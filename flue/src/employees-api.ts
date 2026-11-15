@@ -4,6 +4,7 @@ import type { IncomingMessage } from './telegram-store.js';
 
 export const accessDenied = 'Доступ к боту только для сотрудников. Попросите действующее приглашение.';
 export const accessGranted = 'Вам открыли доступ к боту. Можете задавать вопросы.';
+export const inviteExpired = 'Срок действия приглашения истёк. Попросите новую ссылку.';
 
 function telegramProfile(message: IncomingMessage) {
   return {
@@ -31,7 +32,7 @@ export async function isEmployee(message: IncomingMessage): Promise<boolean> {
   return true;
 }
 
-export async function acceptInvite(id: string, message: IncomingMessage): Promise<boolean> {
+export async function acceptInvite(id: string, message: IncomingMessage): Promise<'accepted' | 'expired' | 'rejected'> {
   const response = await botRequest(`invites/${id}/accept`, {
     method: 'POST',
     body: JSON.stringify({
@@ -42,5 +43,6 @@ export async function acceptInvite(id: string, message: IncomingMessage): Promis
   if (response.status >= 500 || response.status === 429) {
     throw new Error(`Invites API status ${response.status}`);
   }
-  return response.status === 201;
+  if (response.status === 410) return 'expired';
+  return response.status === 201 ? 'accepted' : 'rejected';
 }

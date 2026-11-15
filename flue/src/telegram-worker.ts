@@ -7,7 +7,7 @@ import { Bars } from './agents/bars.js';
 import { saveSupportRequestOutcome, SupportRequestFinalizer } from './agents/support-request-finalizer.js';
 import { bannedMessage, banUser, UserBannedError } from './bans-api.js';
 import { responseSubmission } from './db.js';
-import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employees-api.js';
+import { acceptInvite, accessDenied, accessGranted, inviteExpired, isEmployee } from './employees-api.js';
 import { getSupportKeyboard, type SupportButtons } from './keyboards/support.js';
 import { getSupportTicketUrl } from './support-api.js';
 import { recordDelivery, recordReplyDuration } from './telemetry.js';
@@ -79,10 +79,10 @@ export class TelegramWorker {
           await this.answer(ctx, accessDenied);
           return;
         }
-        const accepted = ctx.employee
-          || await acceptInvite(inviteId, ctx.pending.payload)
-          || await isEmployee(ctx.pending.payload);
-        await this.answer(ctx, accepted ? accessGranted : accessDenied);
+        const invite = ctx.employee ? 'accepted' : await acceptInvite(inviteId, ctx.pending.payload);
+        const accepted = invite === 'accepted' || await isEmployee(ctx.pending.payload);
+        const denied = invite === 'expired' ? inviteExpired : accessDenied;
+        await this.answer(ctx, accepted ? accessGranted : denied);
         return;
       }
       await this.answer(ctx, ctx.employee ? renderChatReply('greeting')! : accessDenied);
