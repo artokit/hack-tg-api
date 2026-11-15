@@ -112,14 +112,14 @@ class GithubSyncRepository:
             source_ids = set(known) | desired.keys()
             for source_id in sorted(source_ids):
                 await self.jobs.lock_source(session, self.index_key, source_id)
+            rows = await session.scalars(
+                select(RagJob).where(*scope).order_by(RagJob.created_at.desc(), RagJob.id.desc()).with_for_update()
+            )
             jobs_by_source: dict[str, list[RagJob]] = defaultdict(list)
-            for job in await session.scalars(select(RagJob).where(*scope).with_for_update()):
+            for job in rows:
                 jobs_by_source[job.source_id].append(job)
             active_scope = (RagDocument.index_key == self.index_key, RagDocument.source_id.in_(source_ids))
-            active_rows = await session.execute(select(
-                RagDocument.source_id, RagDocument.active_version,
-            ).where(*active_scope))
-            active = dict(active_rows.tuples().all())
+            active = {row.source_id: row for row in await session.scalars(select(RagDocument).where(*active_scope))}
             removed = jobs_by_source.keys() - desired.keys()
             if removed:
                 await session.execute(delete(RagDocument).where(*active_scope, RagDocument.source_id.in_(removed)))
@@ -128,25 +128,37 @@ class GithubSyncRepository:
             enqueued = 0
             for source_id, document in desired.items():
                 jobs = jobs_by_source[source_id]
-                active_version = active.get(source_id)
-                current = active_version is not None and any(
-                    job.version == active_version and job.source_revision == document.revision for job in jobs
-                )
-                pending = [job for job in jobs if job.status in PENDING_STATUSES]
-                keep = next((
-                    job for job in pending if job.source_revision == document.revision
+                job = jobs[0] if jobs else None
+                published = active.get(source_id)
+                current = published is not None and published.source_revision == document.revision
+                if job is None:
+                    job = RagJob(index_key=self.index_key, source_id=source_id, source_kind="github")
+                    session.add(job)
+                elif (
+                    job.status in PENDING_STATUSES and job.source_revision == document.revision
                     and (not current or (job.source_locator or {}).get("refresh_visuals") == "true")
-                ), None)
-                await self.jobs.schedule_source_cleanup(session, [job for job in pending if job is not keep])
-                if not current and keep is None:
-                    session.add(RagJob(
-                        index_key=self.index_key, source_id=source_id, title=document.title,
-                        source_url=document.url, format=document.format, size_bytes=document.size_bytes,
-                        source_kind="github", source_revision=document.revision,
-                        source_locator={"path": document.path, "commit": document.commit},
-                    ))
-                    enqueued += 1
+                ):
+                    continue
+                elif current and published is not None:
+                    if job.version != published.active_version:
+                        self.jobs.requeue(job)
+                        self.set_document(job, document)
+                        self.jobs.restore_published(job, published)
+                    continue
+                else:
+                    self.jobs.requeue(job)
+                self.set_document(job, document)
+                enqueued += 1
             await session.execute(delete(RagGithubSync).where(
                 RagGithubSync.index_key == self.index_key, RagGithubSync.request_id == request_id,
             ))
             return enqueued
+
+    @staticmethod
+    def set_document(job: RagJob, document: GithubDocument) -> None:
+        job.title = document.title
+        job.source_url = document.url
+        job.format = document.format
+        job.size_bytes = document.size_bytes
+        job.source_revision = document.revision
+        job.source_locator = {"path": document.path, "commit": document.commit}
