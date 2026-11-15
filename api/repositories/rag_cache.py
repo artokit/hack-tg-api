@@ -17,13 +17,21 @@ class RagCache:
         self.redis = redis
 
     @staticmethod
-    def key(
-        index_key: str, versions: list[str], question: str, exact_id: str | None, *, include_visual: bool = False,
+    def snapshot(versions: list[str]) -> str:
+        return hashlib.sha256(json.dumps(sorted(versions)).encode()).hexdigest()
+
+    @staticmethod
+    def search_key(
+        index_key: str, snapshot: str, question: str, exact_id: str | None, *, include_visual: bool = False,
     ) -> str:
-        snapshot = hashlib.sha256(json.dumps(sorted(versions)).encode()).hexdigest()
         query = hashlib.sha256(json.dumps([question, exact_id]).encode()).hexdigest()
         namespace = "v1-visual" if include_visual else "v1"
         return f"rag:search:{namespace}:{index_key}:{snapshot}:{query}"
+
+    @staticmethod
+    def answer_key(index_key: str, snapshot: str, question: str) -> str:
+        query = hashlib.sha256(question.encode()).hexdigest()
+        return f"rag:answer:v1:{index_key}:{snapshot}:{query}"
 
     async def get(self, key: str) -> bytes | None:
         try:

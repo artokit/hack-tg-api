@@ -61,7 +61,7 @@ export function Bars() {
         useTool(reportSpamTool(() => reportSpam(telegramUpdate)));
       }
     }
-    useTool(answerTool(Bars, question, (result) => {
+    useTool(answerTool(Bars, question, canReadAttachments, (result) => {
       writeRag(result);
       setStatus('handled');
     }));

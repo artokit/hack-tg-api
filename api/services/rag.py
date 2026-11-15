@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from pathlib import PurePath
+from unicodedata import normalize
 from urllib.parse import unquote, urlsplit
 from uuid import UUID, uuid4
 
@@ -14,7 +15,7 @@ from repositories.rag_extract import identifiers, render_pdf_region, telegram_pn
 from repositories.rag_files import DOCUMENT_FORMATS, MAX_DOCUMENT_BYTES, RagFiles
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
-from schemas.rag import RagCachedEvidence
+from schemas.rag import RagAnswerRead, RagCachedEvidence
 
 
 log = logging.getLogger(__name__)
@@ -141,28 +142,60 @@ class RagService:
                 return await asyncio.to_thread(telegram_png, image) if telegram else image
         raise RagDocumentNotFound
 
+    async def active_versions(self) -> list[str]:
+        try:
+            return await self.jobs.active_versions(self.index.key)
+        except RagQueueUnavailable as error:
+            raise RagUnavailable("index_unavailable") from error
+
+    def answer_key(self, snapshot: str, question: str) -> str:
+        normalized = normalize("NFC", " ".join(question.split()))
+        return self.cache.answer_key(self.index.key, snapshot, normalized.removesuffix("?").rstrip() or normalized)
+
+    async def cached_answer(self, question: str) -> RagAnswerRead | None:
+        versions = await self.active_versions()
+        if not versions:
+            return None
+        cached = await self.cache.get(self.answer_key(self.cache.snapshot(versions), question))
+        if cached is None:
+            return None
+        try:
+            answer = RagAnswerRead.model_validate_json(cached)
+        except ValidationError:
+            log.debug("RAG cached answer failed validation")
+            return None
+        for source in answer.sources:
+            if source.file_id:
+                source.url = self.files.link(source.file_id)
+                if source.url and source.page:
+                    source.url += f"#page={source.page}"
+        return answer
+
+    async def cache_answer(self, question: str, snapshot: str, answer: RagAnswerRead) -> None:
+        sources = [source.model_copy(update={"url": None}) if source.file_id else source for source in answer.sources]
+        cached = answer.model_copy(update={"sources": sources})
+        await self.cache.set(self.answer_key(snapshot, question), cached.model_dump_json().encode())
+
     async def search(
         self, question: str, exact_id: str | None, original: str, *,
         standalone: bool = False, include_visual: bool = False,
-    ) -> list[dict]:
+    ) -> tuple[list[dict], str | None]:
         allowed = identifiers(original) or identifiers(question)
         if exact_id and exact_id not in allowed:
             raise UnexpectedDocumentId("Unexpected document ID")
-        try:
-            versions = await self.jobs.active_versions(self.index.key)
-        except RagQueueUnavailable as error:
-            raise RagUnavailable("index_unavailable") from error
+        versions = await self.active_versions()
         if not versions:
-            return []
-        key = self.cache.key(self.index.key, versions, question, exact_id, include_visual=include_visual)
-        original_key = self.cache.key(
-            self.index.key, versions, original, exact_id, include_visual=include_visual,
+            return [], None
+        snapshot = self.cache.snapshot(versions)
+        key = self.cache.search_key(self.index.key, snapshot, question, exact_id, include_visual=include_visual)
+        original_key = self.cache.search_key(
+            self.index.key, snapshot, original, exact_id, include_visual=include_visual,
         ) if standalone else None
         results = None
+        cacheable = True
         if original_key:
             results = self.read_cached(await self.cache.get_by_original(original_key))
         if results is None:
-            cacheable = True
             results = self.read_cached(await self.cache.get(key))
             if results is None:
                 evidence, cacheable = await self.retrieve(question, exact_id, versions, include_visual=include_visual)
@@ -171,9 +204,9 @@ class RagService:
                     await self.cache.set(key, CACHED_EVIDENCE.dump_json(results))
             if original_key and results and cacheable:
                 await self.cache.bind_original(original_key, key)
-        return [
+        evidence = [
             {
-                **block.model_dump(exclude={"file_id", "box", "image_file_id"}),
+                **block.model_dump(exclude={"box", "image_file_id"}),
                 "source_url": self.files.link(block.file_id) if block.file_id else block.source_url,
                 "box": block.box if (
                     block.file_id and block.format == "pdf" and block.kind in ("visual", "scan")
@@ -182,6 +215,7 @@ class RagService:
             }
             for block in results
         ]
+        return evidence, snapshot if standalone and evidence and cacheable else None
 
     @staticmethod
     def image_key(block: RagCachedEvidence) -> str | None:
