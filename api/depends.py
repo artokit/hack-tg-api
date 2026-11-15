@@ -6,7 +6,7 @@ from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBea
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config import AuthSettings, InviteSettings, TICKET_ROUTES
+from config import AuthSettings, InviteSettings
 from repositories.employee_cache import EmployeeCacheRepository
 from repositories.employees import EmployeeRepository
 from repositories.health import HealthRepository
@@ -23,8 +23,7 @@ from services.invites import InviteService
 from services.rag import RagOriginals, RagService
 from services.support_requests import SupportRequestService
 from services.technical_analytics import TechnicalAnalyticsService
-from services.ticket_service import TicketAttachmentService, TicketService
-from tickets.registry import build_adapter
+from services.ticket_service import TicketService
 
 bearer_scheme = HTTPBearer(scheme_name="UserJWT", bearerFormat="JWT", auto_error=False)
 bot_token_scheme = APIKeyHeader(name="X-Bot-Token", scheme_name="BotToken", auto_error=False)
@@ -95,12 +94,6 @@ def get_support_request_service(
     session: AsyncSession = Depends(get_async_session),
 ) -> SupportRequestService:
     return SupportRequestService(SupportRequestRepository(session), TicketRepository(session))
-
-
-def get_ticket_attachment_service(
-    session: AsyncSession = Depends(get_async_session),
-) -> TicketAttachmentService:
-    return TicketAttachmentService(TicketRepository(session), build_adapter(TICKET_ROUTES["default"]))
 
 
 def get_invite_settings(request: Request) -> InviteSettings:

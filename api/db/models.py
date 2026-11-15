@@ -77,7 +77,6 @@ class Ticket(Base):
         ForeignKey("support_requests.id"), unique=True,
     )
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    attachment_comment_id: Mapped[str | None] = mapped_column(String(100))
     external_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     external_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
