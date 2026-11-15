@@ -163,15 +163,36 @@ class RagIndex:
             key=lambda chunk: (chunk["source_id"], chunk["order"]),
         )
 
-    async def semantic(self, text: str, versions: list[str]) -> list[dict]:
+    async def semantic(
+        self, text: str, versions: list[str], *, include_visual: bool = False,
+    ) -> tuple[list[dict], list[dict] | None]:
         if not versions:
-            return []
+            return [], []
         [vector] = await self.vectors([f"Instruct: {QUERY_INSTRUCTION}\nQuery: {text}"])
-        result = await self.request("POST", "/points/query", {
-            "query": vector, "filter": self.filter(versions),
-            "limit": 8, "with_payload": True,
-        })
-        return [row["payload"] for row in result["points"]]
+        async def query(filter_: dict, limit: int) -> list[dict]:
+            result = await self.request("POST", "/points/query", {
+                "query": vector, "filter": filter_, "limit": limit, "with_payload": True,
+            })
+            return [row["payload"] for row in result["points"]]
+
+        if not include_visual:
+            return await query(self.filter(versions), 8), []
+        visual_filter = self.filter(versions)
+        visual_filter["must"].extend([
+            {"key": "format", "match": {"value": "pdf"}},
+            {"key": "evidence[].kind", "match": {"any": ["visual", "scan"]}},
+        ])
+        chunks, visuals = await asyncio.gather(
+            query(self.filter(versions), 8), query(visual_filter, 24), return_exceptions=True,
+        )
+        if isinstance(chunks, BaseException):
+            raise chunks
+        if isinstance(visuals, RagUnavailable):
+            log.warning("RAG visual candidate search unavailable")
+            return chunks, None
+        if isinstance(visuals, BaseException):
+            raise visuals
+        return chunks, visuals
 
     async def related(self, ids: list[str], versions: list[str]) -> list[dict]:
         if not ids:

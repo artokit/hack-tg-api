@@ -187,8 +187,22 @@ async def search(query: RagSearchRequest, service: Service):
     try:
         return await service.search(
             query.question, query.exact_id, query.original_question, standalone=query.standalone,
+            include_visual=query.include_visual,
         )
     except UnexpectedDocumentId as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except RagUnavailable as error:
         raise HTTPException(status_code=503, detail="Document search temporarily unavailable") from error
+
+
+@router.get("/internal/rag/visual/{block_id}", dependencies=[Depends(require_bot_token)])
+async def visual(
+    block_id: Annotated[str, Path(pattern=r"^[a-f0-9-]{36}:[1-9][0-9]{0,5}$")], service: Service,
+):
+    try:
+        image = await service.visual(block_id)
+    except (RagDocumentNotFound, InvalidDocument) as error:
+        raise HTTPException(status_code=404, detail="Document image unavailable") from error
+    except RagUnavailable as error:
+        raise HTTPException(status_code=503, detail="Document image temporarily unavailable") from error
+    return Response(image, media_type="image/png", headers={"cache-control": "private, no-store"})
