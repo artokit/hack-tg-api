@@ -27,7 +27,7 @@ class RagJobs:
     async def enqueue(
         self, job_id: UUID, index_key: str, source_id: str, title: str | None,
         source_url: str | None, format: str, file_id: UUID | None = None, size_bytes: int | None = None,
-        *, source_kind: str, source_locator: dict[str, str] | None = None,
+        *, source_kind: str,
     ) -> None:
         async with self.session(transaction=True) as session:
             await self.lock_source(session, index_key, source_id)
@@ -35,8 +35,28 @@ class RagJobs:
                 id=job_id,
                 index_key=index_key, source_id=source_id, title=title or "", source_url=source_url,
                 format=format, file_id=file_id, size_bytes=size_bytes,
-                source_kind=source_kind, source_locator=source_locator,
+                source_kind=source_kind,
             ))
+
+    async def enqueue_confluence(self, index_key: str, source_id: str, space_id: str, page_id: str) -> UUID:
+        async with self.session(transaction=True) as session:
+            await self.lock_source(session, index_key, source_id)
+            job = await session.scalar(select(RagJob).where(
+                RagJob.index_key == index_key, RagJob.source_id == source_id, RagJob.source_kind == "confluence",
+                RagJob.status.not_in(("deleting", "skipped")),
+            ).order_by(RagJob.created_at.desc(), RagJob.id.desc()).limit(1).with_for_update())
+            locator = {"space_id": space_id, "page_id": page_id}
+            if job is None:
+                job = RagJob(
+                    id=uuid4(), index_key=index_key, source_id=source_id, title="", format="html",
+                    source_kind="confluence", source_locator=locator,
+                )
+                session.add(job)
+            else:
+                if job.status != "queued":
+                    self.requeue(job)
+                job.source_locator = locator
+            return job.id
 
     @staticmethod
     async def lock_source(session: AsyncSession, index_key: str, source_id: str) -> None:
@@ -60,6 +80,27 @@ class RagJobs:
                 "legacy": legacy, "retry_at": None,
             }]
 
+    def requeue(self, job: RagJob) -> None:
+        self.record_cleanup(job, job.version, job.file_id, legacy=job.source_kind == "file" and not job.file_id)
+        job.status = "queued"
+        job.error_code = None
+        job.version = None
+        job.chunk_count = None
+        job.purged_at = None
+        job.created_at = func.clock_timestamp()
+        job.updated_at = func.now()
+
+    @staticmethod
+    def restore_published(job: RagJob, document: RagDocument) -> None:
+        job.status = "succeeded"
+        job.error_code = None
+        job.version = document.active_version
+        job.source_revision = document.source_revision
+        job.chunk_count = document.chunk_count
+        job.purged_at = None
+        job.updated_at = func.now()
+        job.cleanup = [item for item in job.cleanup if item["version"] != document.active_version]
+
     async def replace(
         self, job_id: UUID, index_key: str, source_id: str, title: str, format: str, file_id: UUID, size_bytes: int,
     ) -> bool | None:
@@ -73,7 +114,7 @@ class RagJobs:
             if job.status == "deleting":
                 self.record_cleanup(job, None, file_id)
                 return False
-            self.record_cleanup(job, job.version, job.file_id, legacy=job.source_kind == "file" and not job.file_id)
+            self.requeue(job)
             job.title = title
             job.format = format
             job.file_id = file_id
@@ -82,13 +123,6 @@ class RagJobs:
             job.source_kind = "file"
             job.source_locator = None
             job.source_revision = None
-            job.status = "queued"
-            job.error_code = None
-            job.version = None
-            job.chunk_count = None
-            job.purged_at = None
-            job.created_at = func.clock_timestamp()
-            job.updated_at = func.now()
             return True
 
     async def delete_source(self, job_id: UUID, index_key: str) -> bool:
@@ -121,7 +155,8 @@ class RagJobs:
                 RagJob.source_kind == "confluence",
                 RagJob.source_locator["space_id"].astext == space_id,
             ).with_for_update()))
-            versions = [job.version for job in jobs if job.version]
+            versions = {job.version for job in jobs if job.version}
+            versions.update(item["version"] for job in jobs for item in job.cleanup if item["version"])
             if versions:
                 await session.execute(delete(RagDocument).where(
                     RagDocument.index_key == index_key, RagDocument.source_id == source_id,
@@ -273,21 +308,20 @@ class RagJobs:
                 file_id=job.file_id, source_locator=job.source_locator, source_revision=job.source_revision,
             )
 
-    async def active_source_revision(self, source_id: str, index_key: str) -> str | None:
-        async with self.session() as session:
-            return await session.scalar(
-                select(RagJob.source_revision)
-                .join(RagDocument, (RagDocument.source_id == RagJob.source_id)
-                      & (RagDocument.index_key == RagJob.index_key) & (RagDocument.active_version == RagJob.version))
-                .where(RagJob.source_id == source_id, RagJob.index_key == index_key)
-            )
-
-    async def skip(self, job: RagImport) -> None:
+    async def restore_confluence(self, job: RagImport, index_key: str, page_version: int, size_bytes: int) -> bool:
         async with self.session(transaction=True) as session:
-            await session.execute(self.finish(job).values(
-                status="skipped", title=job.title, source_url=job.source_url,
-                source_revision=job.source_revision, version=None,
-            ))
+            await self.lock_source(session, index_key, job.source_id)
+            document = await session.get(RagDocument, (job.source_id, index_key))
+            if document is None or document.source_revision is None or page_version > int(document.source_revision):
+                return False
+            current = await session.get(RagJob, job.id, with_for_update=True)
+            if current is not None and current.status == "running" and current.version == job.version:
+                self.restore_published(current, document)
+                if document.source_revision == str(page_version):
+                    current.title = job.title
+                    current.source_url = job.source_url
+                    current.size_bytes = size_bytes
+            return True
 
     async def publish(self, job: RagImport, index_key: str, count: int, size_bytes: int) -> bool:
         async with self.session(transaction=True) as session:
@@ -319,12 +353,13 @@ class RagJobs:
                     retired.cleanup = [
                         {**item, "retry_at": retry_at} if item["version"] == previous else item for item in retired.cleanup
                     ]
+            published = {"active_version": job.version, "source_revision": job.source_revision, "chunk_count": count}
             await session.execute(
                 insert(RagDocument)
-                .values(source_id=job.source_id, active_version=job.version, index_key=index_key)
+                .values(source_id=job.source_id, index_key=index_key, **published)
                 .on_conflict_do_update(
                     index_elements=[RagDocument.source_id, RagDocument.index_key],
-                    set_={"active_version": job.version},
+                    set_=published,
                 )
             )
             return True

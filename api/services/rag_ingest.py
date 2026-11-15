@@ -167,12 +167,10 @@ class RagIngest:
                 if job.source_kind == "confluence":
                     page = await self.load_confluence(job.source_locator or {})
                     job = replace(job, title=page.title[:250], source_url=page.url, source_revision=str(page.version))
-                    active = await self.jobs.active_source_revision(job.source_id, self.index.key)
-                    if active is not None and page.version <= int(active):
-                        await self.jobs.skip(job)
+                    data = page.content_html.encode("utf-8")
+                    if await self.jobs.restore_confluence(job, self.index.key, page.version, len(data)):
                         log.info("RAG import %s skipped Confluence version %d", job.id, page.version)
                         return
-                    data = page.content_html.encode("utf-8")
                     if len(data) > MAX_DOCUMENT_BYTES:
                         raise DocumentTooLarge("document_too_large")
                 elif job.source_kind == "url" and job.source_url:

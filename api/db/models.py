@@ -116,6 +116,8 @@ class RagDocument(Base):
     source_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     index_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     active_version: Mapped[str] = mapped_column(String(36))
+    source_revision: Mapped[str | None] = mapped_column(Text)
+    chunk_count: Mapped[int | None] = mapped_column()
 
 
 class RagGithubSync(Base):
