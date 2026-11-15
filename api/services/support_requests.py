@@ -7,7 +7,7 @@ from config import TICKET_ROUTES
 from db.models import SupportRequest, Ticket
 from repositories.support_requests import SupportRequestRepository
 from repositories.tickets import TicketRepository
-from schemas.support_requests import SupportRequestCreate
+from schemas.support_requests import RequestCostRead, SupportRequestCreate
 from schemas.ticket import TicketCreate
 
 
@@ -29,6 +29,14 @@ class SupportRequestService:
         if request is None:
             raise SupportRequestNotFound
         return request
+
+    async def cost_summary(self, from_at: datetime | None, to_at: datetime | None) -> RequestCostRead:
+        closed_count, priced_count, total = await self._requests.cost_summary(from_at, to_at)
+        return RequestCostRead(
+            closed_count=closed_count, priced_count=priced_count,
+            total=float(total) if total is not None else None,
+            mean=float(total / priced_count) if total is not None else None,
+        )
 
     async def create(self, data: SupportRequestCreate) -> SupportRequest:
         try:

@@ -123,6 +123,15 @@ export default {
       CREATE INDEX IF NOT EXISTS bars_telegram_pending_chat
         ON bars_telegram_updates (bot_id, chat_id, received_at) WHERE finished_at IS NULL;
 
+      ALTER TABLE bars_telegram_requests ADD COLUMN IF NOT EXISTS tracks_model_cost boolean NOT NULL DEFAULT false;
+      CREATE TABLE IF NOT EXISTS bars_telegram_request_model_costs (
+        request_id uuid NOT NULL REFERENCES bars_telegram_requests (id) ON DELETE CASCADE,
+        turn_id text NOT NULL,
+        occurred_at timestamptz NOT NULL,
+        cost_nano_usd bigint CHECK (cost_nano_usd >= 0),
+        PRIMARY KEY (request_id, turn_id)
+      );
+
       CREATE TABLE IF NOT EXISTS bars_telegram_request_events (
         id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
         request_id uuid NOT NULL REFERENCES bars_telegram_requests (id),

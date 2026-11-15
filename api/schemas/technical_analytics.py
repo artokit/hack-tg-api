@@ -31,8 +31,14 @@ class ResponseTimeRead(BaseModel):
 
 
 class TechnicalStageRead(BaseModel):
-    stage: Literal["queue", "preparation", "delivery"]
+    stage: Literal["queue", "preparation", "search", "generation", "delivery"]
     mean_ms: float | None
+
+
+class ResponseBreakdownRead(BaseModel):
+    sample_count: int
+    mean_ms: float | None
+    stages: list[TechnicalStageRead]
 
 
 class AgentStepRead(BaseModel):
@@ -61,6 +67,10 @@ class TechnicalAnalyticsRead(BaseModel):
         "tokens": {kind: {"input": 0, "output": 0, "by_model": []} for kind in ("chat", "document_import")},
         "response_time": {"sample_count": 0, "mean_ms": None, "p95_ms": None},
         "stages": [{"stage": stage, "mean_ms": None} for stage in ("queue", "preparation", "delivery")],
+        "response_breakdown": {"sample_count": 0, "mean_ms": None, "stages": [
+            {"stage": stage, "mean_ms": None}
+            for stage in ("queue", "preparation", "search", "generation", "delivery")
+        ]},
         "agent_breakdown": [],
         "delivery": {kind: {"sent": 0, "failed": 0, "unknown": 0} for kind in ("answer", "fallback", "service")},
     }]})
@@ -71,5 +81,6 @@ class TechnicalAnalyticsRead(BaseModel):
     tokens: TechnicalTokensRead
     response_time: ResponseTimeRead
     stages: list[TechnicalStageRead]
+    response_breakdown: ResponseBreakdownRead
     agent_breakdown: list[AgentStepRead]
     delivery: TechnicalDeliveryRead

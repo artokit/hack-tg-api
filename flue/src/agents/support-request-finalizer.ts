@@ -3,6 +3,7 @@ import * as v from 'valibot';
 
 import { pool, submissionText } from '../db.js';
 import { modelId } from '../provider.js';
+import { closedRequestCost } from '../request-pricing.js';
 import { attachSupportConversation, saveClosedRequest } from '../support-api.js';
 import { closedRequest, type ClosedRequest, handoffDraft, type HandoffDraft, supportRequestClosed } from '../support-request.js';
 import { requestHistory } from '../telegram-requests.js';
@@ -25,7 +26,10 @@ export function SupportRequestFinalizer() {
   }
   const request = v.parse(closedRequest, JSON.parse(delivery.body));
   useModel(`bars-chat/${modelId}`);
-  useAgentStart(() => saveClosedRequest(request));
+  useAgentStart(async () => {
+    const cost = await closedRequestCost(request.request_id, request.instance_id);
+    await saveClosedRequest(request, cost);
+  });
 
   const draft = request.handoff;
   if (!draft) return 'Итог обращения уже сохранён. Кратко подтверди завершение.';
