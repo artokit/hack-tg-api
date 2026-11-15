@@ -17,6 +17,16 @@ class RagJobCreated(BaseModel):
     file_id: UUID | None = None
 
 
+class RagFileUploadCreated(RagJobCreated):
+    filename: str
+
+
+class RagFileUploadError(BaseModel):
+    filename: str
+    status_code: int
+    detail: str
+
+
 class RagUrlRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 

@@ -3,15 +3,15 @@ from functools import partial
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, Header, HTTPException, Path, Query, UploadFile
-from fastapi.responses import Response, StreamingResponse
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Path, Query, UploadFile
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from depends import get_current_user, get_rag_originals, get_rag_service, require_bot_token
 from models.rag import DocumentTooLarge, InvalidDocument, RagDocumentNotFound, RagUnavailable
 from repositories.rag_files import MAX_DOCUMENT_BYTES
 from schemas.rag import (
-    CONFLUENCE_ID_PATTERN, SOURCE_ID_PATTERN, RagConfluenceImportCreate, RagEvidenceRead, RagJobCreated,
-    RagJobPage, RagJobRead, RagSearchRequest, RagUrlRequest,
+    CONFLUENCE_ID_PATTERN, SOURCE_ID_PATTERN, RagConfluenceImportCreate, RagEvidenceRead, RagFileUploadCreated,
+    RagFileUploadError, RagJobCreated, RagJobPage, RagJobRead, RagSearchRequest, RagUrlRequest,
 )
 from services.rag import RagOriginals, RagService, UnexpectedDocumentId
 
@@ -21,15 +21,38 @@ Service = Annotated[RagService, Depends(get_rag_service)]
 
 
 @router.post(
-    "/rag/documents", response_model=RagJobCreated, status_code=202, dependencies=[Depends(get_current_user)],
+    "/rag/documents", response_model=list[RagFileUploadCreated | RagFileUploadError],
+    responses={202: {"model": RagJobCreated, "description": "Single file accepted"}},
+    dependencies=[Depends(get_current_user)],
 )
 async def upload_document(
     service: Service,
-    file: UploadFile,
+    files: Annotated[list[UploadFile] | None, File(min_length=1)] = None,
+    file: UploadFile | None = None,
     source_id: Annotated[str | None, Form(min_length=1, max_length=100, pattern=SOURCE_ID_PATTERN)] = None,
     title: Annotated[str | None, Form(min_length=1, max_length=250)] = None,
 ):
-    return await save_upload(file, title, partial(service.submit_file, source_id))
+    if files is None:
+        if file is None:
+            raise HTTPException(status_code=422, detail="Provide file or files")
+        job = await save_upload(file, title, partial(service.submit_file, source_id))
+        return JSONResponse(status_code=202, content=job.model_dump(mode="json"))
+    if file is not None:
+        raise HTTPException(status_code=422, detail="Provide either file or files")
+    if source_id is not None or title is not None:
+        raise HTTPException(status_code=422, detail="Source metadata requires the file field")
+
+    results: list[RagFileUploadCreated | RagFileUploadError] = []
+    submit = partial(service.submit_file, None)
+    for upload in files:
+        filename = upload.filename or ""
+        try:
+            job = await save_upload(upload, None, submit)
+        except HTTPException as error:
+            results.append(RagFileUploadError(filename=filename, status_code=error.status_code, detail=error.detail))
+        else:
+            results.append(RagFileUploadCreated(filename=filename, **job.model_dump()))
+    return results
 
 
 async def save_upload(
