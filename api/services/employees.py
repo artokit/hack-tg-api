@@ -10,14 +10,16 @@ from schemas.employees import (
     EmployeeTelegramUpdate,
     EmployeeUpdate,
 )
+from services.bans import BanService
 
 
 class EmployeeService:
     def __init__(
-        self, repository: EmployeeRepository, cache: EmployeeCacheRepository
+        self, repository: EmployeeRepository, cache: EmployeeCacheRepository, bans: BanService
     ):
         self._repository = repository
         self._cache = cache
+        self._bans = bans
 
     async def create(self, data: EmployeeCreate, username: str | None = None):
         existing = await self._repository.get_by_telegram_id(data.telegram_id)
@@ -28,6 +30,7 @@ class EmployeeService:
         )
 
     async def get_by_telegram_id(self, telegram_id: int):
+        await self._bans.ensure_allowed(telegram_id)
         cached = await self._get_cached(telegram_id)
         if cached is not None:
             return cached

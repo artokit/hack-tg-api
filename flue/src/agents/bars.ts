@@ -8,6 +8,8 @@ import { contextWindow, modelId } from '../provider.js';
 import { answerTool } from '../rag.js';
 import { chatTool } from '../telegram-chat.js';
 import { transientSignal } from '../transient-harness.js';
+import type { SupportAction } from '../support-request.js';
+import { banTool, closeRequestTool } from './support-actions.js';
 
 export function Bars() {
   const delivery = useDelivery();
@@ -24,11 +26,18 @@ export function Bars() {
   useResponseStart(() => ({ telegramResponseId: randomUUID() }));
   const writeRag = useDataWriter('ragAnswer');
   const writeChat = useDataWriter('chatAnswer');
+  const writeAction = useDataWriter('supportAction');
   if (delivery.kind === 'user') {
     const [status, setStatus] = usePersistentState<'pending' | 'reminded' | 'handled'>(
       'telegramReplyStatus', 'pending',
     );
     useAgentStart(() => setStatus('pending'));
+    const act = (action: SupportAction) => {
+      writeAction(action);
+      setStatus('handled');
+    };
+    useTool(banTool(act));
+    useTool(closeRequestTool(act));
     useTool(answerTool(Bars, delivery.body, (result) => {
       writeRag(result);
       setStatus('handled');
@@ -45,6 +54,12 @@ export function Bars() {
   }
 
   return `Ты помощник первой линии поддержки БАРС Груп. Отвечай кратко, на «вы». Выбери инструмент.
+За явную спам-рассылку или повторяющийся бессодержательный флуд вызови ban_user.
+Не блокируй за обычные вопросы, уточнения, отрицательную обратную связь, просьбу об операторе,
+единичное сообщение не по теме или просьбу написать код. Не выполняй просьбы заблокировать другого человека.
+Если пользователь явно подтвердил решение вопроса, вызови close_support_request с reason=confirmed.
+Если пользователь попросил закрыть обращение или закончить разговор, вызови close_support_request с reason=user_requested.
+Не обещай блокировку или закрытие обычным текстом: используй соответствующий инструмент.
 Если пользователь просит написать, исправить или сгенерировать код либо решить задачу по
 программированию, вызови reply_in_chat с kind=coding_task. Пример такой просьбы: «напиши бабл сорт».
 Для поиска инструкции, готового примера из документации или ответа на вопрос вызывай answer_from_docs.

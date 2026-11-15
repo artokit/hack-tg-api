@@ -1,4 +1,5 @@
 import { botRequest } from './bot-api.js';
+import { banRemaining, UserBannedError } from './bans-api.js';
 import type { IncomingMessage } from './telegram-store.js';
 
 export const accessDenied = 'Доступ к боту только для сотрудников. Попросите действующее приглашение.';
@@ -15,6 +16,7 @@ function telegramProfile(message: IncomingMessage) {
 export async function isEmployee(message: IncomingMessage): Promise<boolean> {
   const path = `employees/by-telegram-id/${message.userId}`;
   const response = await botRequest(path);
+  if (response.status === 429) throw new UserBannedError(await banRemaining(response));
   if (response.status === 404) return false;
   if (!response.ok) throw new Error(`Employees API status ${response.status}`);
   const employee = await response.json() as { is_parsed: boolean };

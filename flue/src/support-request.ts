@@ -8,9 +8,16 @@ export type HandoffDraft = v.InferOutput<typeof handoffDraft>;
 
 const handoffReason = v.picklist(['rag_exhausted', 'operator_requested']);
 
+export const requestedCloseReason = v.picklist(['confirmed', 'user_requested']);
+export const supportAction = v.variant('action', [
+  v.object({ action: v.literal('ban') }),
+  v.object({ action: v.literal('close'), reason: requestedCloseReason }),
+]);
+export type SupportAction = v.InferOutput<typeof supportAction>;
+
 const closeReason = v.picklist([
-  'confirmed', 'thanks', 'user_closed', 'feedback_timeout', 'clarification_timeout', 'details_timeout',
-  'technical_timeout', 'reset', 'delivery_failed', ...handoffReason.options,
+  'thanks', 'user_closed', 'feedback_timeout', 'clarification_timeout', 'details_timeout',
+  'technical_timeout', 'reset', 'delivery_failed', 'spam', ...requestedCloseReason.options, ...handoffReason.options,
 ]);
 export type CloseReason = v.InferOutput<typeof closeReason>;
 

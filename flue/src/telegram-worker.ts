@@ -1,20 +1,22 @@
 import { AgentRunError, init } from '@flue/runtime';
 import { type FSMFlavor, type StateSession, stateMiddleware } from '@kalutskii/grammy-fsm';
 import { type Api, type SessionFlavor, Composer, Context } from 'grammy';
+import * as v from 'valibot';
 
 import { Bars } from './agents/bars.js';
 import { SupportRequestFinalizer } from './agents/support-request-finalizer.js';
+import { bannedMessage, banUser, UserBannedError } from './bans-api.js';
 import { responseSubmission } from './db.js';
 import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employees-api.js';
 import { getSupportKeyboard, type SupportButtons } from './keyboards/support.js';
 import { getSupportTicketUrl } from './support-api.js';
 import { recordDelivery, recordReplyDuration } from './telemetry.js';
 import { isAcknowledgement, isCloseRequest, renderChatReply } from './telegram-chat.js';
-import { type ClosedRequest, type CloseReason, isOperatorRequest, supportRequestClosed } from './support-request.js';
+import { type ClosedRequest, type CloseReason, isOperatorRequest, type SupportAction, supportAction, supportRequestClosed } from './support-request.js';
 import { renderRag, supportRagReply } from './telegram-rag.js';
 import { type DeliveryResult, TelegramOutput } from './telegram-output.js';
 import { type ActiveRequest, type RequestPhase, TelegramRequests } from './telegram-requests.js';
-import { type DeliveryKind, type PendingUpdate, resetAnswer, TelegramStore } from './telegram-store.js';
+import { type DeliveryKind, type PendingUpdate, TelegramStore } from './telegram-store.js';
 
 const unavailable = 'Сейчас не получается ответить. Попробуйте чуть позже.';
 const feedbackQuestion = 'Удалось решить вопрос?';
@@ -38,7 +40,7 @@ function shortReply(text: string): string {
 
 function closeAcknowledgement(reason: CloseReason | undefined): string | undefined {
   if (reason === 'thanks') return `Пожалуйста! ${closedAnswer}`;
-  if (reason === 'confirmed' || reason === 'user_closed') return closedAnswer;
+  if (reason === 'confirmed' || reason === 'user_closed' || reason === 'user_requested') return closedAnswer;
   if (reason === 'operator_requested') return handoffAnswer;
 }
 
@@ -83,15 +85,6 @@ export class TelegramWorker {
       }
       await this.answer(ctx, ctx.employee ? renderChatReply('greeting')! : accessDenied);
     });
-    this.handlers.command('reset', async (ctx) => {
-      if (!ctx.employee) {
-        await ctx.fsm.clear();
-        await this.answer(ctx, accessDenied);
-        return;
-      }
-      await ctx.fsm.clear();
-      await this.answer(ctx, resetAnswer);
-    });
     this.handlers.on('message:entities:bot_command', (ctx) => { ctx.answer = ''; });
   }
 
@@ -130,17 +123,19 @@ export class TelegramWorker {
   }
 
   private async admit(update: PendingUpdate): Promise<void> {
-    const employee = await isEmployee(update.payload);
-    const answer = update.command_answer ?? (update.instance_id === null
-      ? await this.handle(update, employee) : null);
+    let employee: boolean;
+    let answer: string | null;
+    try {
+      employee = await isEmployee(update.payload);
+      answer = update.command_answer ?? (update.instance_id === null
+        ? await this.handle(update, employee) : null);
+    } catch (error) {
+      if (!(error instanceof UserBannedError)) throw error;
+      this.rejectBanned(update, error.retryAfterSeconds);
+      return;
+    }
     const response = answer ?? (!employee ? accessDenied : null);
     if (response !== null) {
-      if (response === resetAnswer) {
-        const active = await this.requests.active(update.chat_id);
-        if (active && BigInt(active.latest_sequence) < BigInt(update.sequence)) {
-          await this.requests.close(active, active.latest_sequence, 'reset');
-        }
-      }
       this.run(update, async () => {
         if (response) {
           await this.output.send(`command:${update.update_id}`, update.chat_id, response, 'service', false);
@@ -175,9 +170,12 @@ export class TelegramWorker {
       let phase: RequestPhase = 'technical';
       let followUp: string | undefined;
       let buttons: SupportButtons | undefined;
+      let action: SupportAction | undefined;
       let available = true;
       try {
         const reply = await agent.read(submissionId);
+        const parsedAction = v.safeParse(supportAction, reply.data.supportAction?.at(-1));
+        if (parsedAction.success) action = parsedAction.output;
         const responseId = reply.metadata?.telegramResponseId;
         if (typeof responseId === 'string') deliveryId = `response:${responseId}`;
         const ragResults = reply.data.ragAnswer;
@@ -201,7 +199,7 @@ export class TelegramWorker {
       } finally {
         stopTyping();
       }
-      if (!replyText) deliveryId = 'failure:' + await responseSubmission(submissionId);
+      if (!replyText && !action) deliveryId = 'failure:' + await responseSubmission(submissionId);
       const kind = replyText && available ? 'answer' : 'fallback';
       if (!request) {
         const receipt = await this.output.send(
@@ -213,6 +211,10 @@ export class TelegramWorker {
       await this.runReply(update.chat_id, async () => {
         const active = await this.requests.active(update.chat_id);
         if (active?.id !== request.id) return;
+        if (action) {
+          await this.applyAction(update, active, action);
+          return;
+        }
         const receipt = await this.deliver(request, deliveryId, replyText || unavailable, {
           sequence: update.sequence, phase: followUp ? undefined : phase,
           html: replyHtml, rich: !!replyText, kind, images: replyImages, buttons: followUp ? undefined : buttons,
@@ -228,6 +230,28 @@ export class TelegramWorker {
         if (kind === 'answer') await this.recordReplyTiming(submissionId, receipt);
       });
     });
+  }
+
+  private rejectBanned(update: PendingUpdate, seconds: number): void {
+    this.run(update, async () => {
+      const active = await this.requests.active(update.chat_id);
+      if (active) await this.requests.close(active, active.latest_sequence, 'spam');
+      await this.output.send(`banned:${update.update_id}`, update.chat_id, bannedMessage(seconds), 'service', false);
+    });
+  }
+
+  private async applyAction(update: PendingUpdate, request: ActiveRequest, action: SupportAction): Promise<void> {
+    if (action.action === 'ban') {
+      const seconds = await banUser(update.payload.userId);
+      await this.deliver(request, `ban:${request.id}`, bannedMessage(seconds));
+      await this.requests.close(request, request.latest_sequence, 'spam');
+      return;
+    }
+    if (request.latest_sequence !== update.sequence) return;
+    if (await this.requests.close(request, update.sequence, action.reason)) {
+      await this.output.send(`closed:${update.update_id}`, update.chat_id,
+        'Обращение закрыто. Следующий вопрос начнёт новое обращение.', 'service', false);
+    }
   }
 
   private async recordReplyTiming(submissionId: string, receipt: DeliveryResult): Promise<void> {
