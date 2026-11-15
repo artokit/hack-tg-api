@@ -6,16 +6,15 @@ const replies = {
   thanks: 'Пожалуйста!',
   farewell: 'До встречи!',
   capabilities: 'Я отвечаю на вопросы по базе знаний БАРС и указываю источники.',
-  off_topic: 'Я помогаю с поиском по базе знаний БАРС. Можешь задать мне вопрос по ней.',
 };
 
-const replyKind = v.picklist(['greeting', 'thanks', 'farewell', 'capabilities', 'off_topic']);
+const replyKind = v.picklist(['greeting', 'thanks', 'farewell', 'capabilities']);
 type ReplyKind = v.InferOutput<typeof replyKind>;
 
 export function chatTool(write: (kind: ReplyKind) => void) {
   return defineTool({
     name: 'reply_in_chat',
-    description: 'Ответь на приветствие, благодарность, прощание или вопрос о твоих возможностях. Выбери off_topic для просьбы выполнить постороннюю задачу, например написать код. Вопросы на факты передавай в answer_from_docs.',
+    description: 'Ответь на приветствие, благодарность, прощание или вопрос о твоих возможностях. Если в сообщении есть содержательный запрос, вызывай answer_from_docs, даже если сообщение начинается с приветствия.',
     input: v.object({ kind: replyKind }),
     run({ data }) {
       write(data.kind);
