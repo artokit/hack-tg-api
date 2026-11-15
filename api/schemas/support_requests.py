@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
@@ -19,6 +20,7 @@ class SupportRequestCreate(BaseModel):
     closed_at: AwareDatetime
     is_resolved: bool | None
     close_reason: CloseReason
+    model_cost_usd: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=9)
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "SupportRequestCreate":
@@ -33,6 +35,14 @@ class SupportRequestCreate(BaseModel):
 
 class SupportRequestRead(SupportRequestCreate):
     model_config = ConfigDict(from_attributes=True)
+
+
+class RequestCostRead(BaseModel):
+    currency: Literal["USD"] = "USD"
+    closed_count: int
+    priced_count: int
+    total: float | None
+    mean: float | None
 
 
 class SupportTicketRead(BaseModel):

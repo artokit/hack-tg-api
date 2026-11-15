@@ -43,9 +43,9 @@ export class TelegramRequests {
     const result = await this.pool.query<ActiveRequest>(`
       WITH current_request AS (
         INSERT INTO bars_telegram_requests (
-          id, bot_id, chat_id, instance_id, opened_at, phase, latest_sequence
+          id, bot_id, chat_id, instance_id, opened_at, phase, latest_sequence, tracks_model_cost
         )
-        VALUES ($1, $2, $3, $4, $5, 'answer', $6)
+        VALUES ($1, $2, $3, $4, $5, 'answer', $6, true)
         ON CONFLICT (bot_id, chat_id) WHERE closed_at IS NULL DO UPDATE
         SET latest_sequence = greatest(bars_telegram_requests.latest_sequence, EXCLUDED.latest_sequence)
         RETURNING id, chat_id, instance_id, latest_sequence, phase, phase_sent_at

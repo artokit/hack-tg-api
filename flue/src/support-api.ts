@@ -14,9 +14,11 @@ async function createIfMissing(readPath: string, createPath: string, body: objec
   throw new Error(`Support API status ${created.status}`);
 }
 
-export function saveClosedRequest(event: ClosedRequest): Promise<void> {
+export function saveClosedRequest(event: ClosedRequest, cost: number | null): Promise<void> {
   const { request_id, handoff: _handoff, ...outcome } = event;
-  return createIfMissing(`support-requests/${request_id}`, 'support-requests', { id: request_id, ...outcome });
+  return createIfMissing(`support-requests/${request_id}`, 'support-requests', {
+    id: request_id, ...outcome, model_cost_usd: cost,
+  });
 }
 
 const ticketRead = v.object({ id: v.number(), status: v.string(), external_key: v.nullable(v.string()) });
