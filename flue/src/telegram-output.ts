@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Api, GrammyError, HttpError, type InlineKeyboard, InputFile } from 'grammy';
 
@@ -35,10 +36,18 @@ async function withRateLimit<T>(send: () => Promise<T>): Promise<T> {
 
 async function loadReplyPhotos(images: string[]): Promise<ReplyPhoto[]> {
   const files = await Promise.all(images.map((id) => fetchRagImage(id, undefined, true)));
-  return files.flatMap((file, index) => file ? [{
-    id: `photo_${index + 1}`,
-    media: { type: 'photo', media: new InputFile(file, `screenshot-${index + 1}.png`) },
-  }] : []);
+  const photos = new Map<string, ReplyPhoto>();
+  for (const file of files) {
+    if (!file) continue;
+    const hash = createHash('sha256').update(file).digest('hex');
+    if (photos.has(hash)) continue;
+    const number = photos.size + 1;
+    photos.set(hash, {
+      id: `photo_${number}`,
+      media: { type: 'photo', media: new InputFile(file, `screenshot-${number}.png`) },
+    });
+  }
+  return [...photos.values()];
 }
 
 export class TelegramOutput {
