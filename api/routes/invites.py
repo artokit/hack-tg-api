@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from depends import get_current_user, get_invite_service, require_bot_token
 from schemas.employees import EmployeeRead
 from schemas.invites import InviteAccept, InviteCreate, InviteCreated, InvitePage, InviteRead
-from services.invites import InviteService
+from services.invites import InviteExpiredError, InviteService
 
 router = APIRouter(
     prefix="/invites", tags=["invites"], dependencies=[Depends(get_current_user)]
@@ -66,6 +66,8 @@ async def accept_invite(
 ):
     try:
         return await service.accept(invite_id, data)
+    except InviteExpiredError as error:
+        raise HTTPException(status_code=410, detail="Invite expired") from error
     except LookupError as error:
         raise HTTPException(status_code=404, detail="Invite not found") from error
     except ValueError as error:

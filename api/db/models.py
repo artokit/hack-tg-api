@@ -99,6 +99,7 @@ class Invite(Base):
     count_of_use: Mapped[int] = mapped_column(Integer, default=1)
     first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AwMockSample(Base):
