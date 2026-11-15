@@ -44,9 +44,9 @@ export class TelegramRequests {
       WITH current_request AS (
         INSERT INTO bars_telegram_requests (
           id, bot_id, chat_id, instance_id, opened_at, phase, latest_sequence, tracks_model_cost,
-          tracks_response_metrics
+          tracks_response_metrics, kb_search_count
         )
-        VALUES ($1, $2, $3, $4, $5, 'technical', $6, true, true)
+        VALUES ($1, $2, $3, $4, $5, 'technical', $6, true, true, 0)
         ON CONFLICT (bot_id, chat_id) WHERE closed_at IS NULL DO UPDATE
         SET latest_sequence = greatest(bars_telegram_requests.latest_sequence, EXCLUDED.latest_sequence)
         RETURNING id, chat_id, instance_id, latest_sequence, phase, phase_sent_at

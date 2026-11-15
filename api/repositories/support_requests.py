@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import SupportRequest
@@ -14,6 +14,18 @@ class SupportRequestRepository:
 
     async def get(self, request_id: UUID) -> SupportRequest | None:
         return await self._session.get(SupportRequest, request_id)
+
+    async def record_kb_search(self, instance_id: str) -> None:
+        try:
+            await self._session.execute(text("""
+                UPDATE public.bars_telegram_requests
+                SET kb_search_count = kb_search_count + 1
+                WHERE instance_id = :instance_id AND kb_search_count IS NOT NULL
+            """), {"instance_id": instance_id})
+            await self._session.commit()
+        except Exception:
+            await self._session.rollback()
+            raise
 
     async def cost_summary(
         self, from_at: datetime | None, to_at: datetime | None,
