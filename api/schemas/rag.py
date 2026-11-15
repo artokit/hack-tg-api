@@ -17,6 +17,16 @@ class RagJobCreated(BaseModel):
     file_id: UUID | None = None
 
 
+class RagFileUploadCreated(RagJobCreated):
+    filename: str
+
+
+class RagFileUploadError(BaseModel):
+    filename: str
+    status_code: int
+    detail: str
+
+
 class RagUrlRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
@@ -66,6 +76,7 @@ class RagSearchRequest(BaseModel):
     original_question: str = Field(min_length=1, max_length=4096)
     exact_id: str | None = Field(default=None, max_length=40)
     standalone: bool = False
+    include_visual: bool = False
 
 
 class RagEvidenceRead(BaseModel):
@@ -80,6 +91,8 @@ class RagEvidenceRead(BaseModel):
     text: str
     label: str = ""
     columns: list[str] = Field(default_factory=list)
+    box: tuple[int, int, int, int] | None = None
+    visual_rank: int | None = None
 
 
 class RagCachedEvidence(RagEvidenceRead):

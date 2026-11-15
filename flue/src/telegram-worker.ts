@@ -230,9 +230,10 @@ export class TelegramWorker {
   private async recordReplyTiming(submissionId: string, receipt: DeliveryResult): Promise<void> {
     if (receipt.status !== 'sent' || receipt.startedAt === undefined || receipt.finishedAt === undefined) return;
     try {
-      const timing = await this.store.replyTiming(await responseSubmission(submissionId));
+      const responseId = await responseSubmission(submissionId);
+      const timing = await this.store.replyTiming(responseId);
       if (timing?.received_at && timing.processing_at) {
-        recordReplyDuration(timing.received_at, timing.processing_at, receipt.startedAt, receipt.finishedAt);
+        recordReplyDuration(responseId, timing.received_at, timing.processing_at, receipt.startedAt, receipt.finishedAt);
       }
     } catch (error) {
       console.warn('Telegram timing unavailable', error instanceof Error ? error.name : 'Error');

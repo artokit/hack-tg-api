@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
@@ -10,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     Uuid,
@@ -55,9 +57,10 @@ class SupportRequest(Base):
     telegram_chat_id: Mapped[int] = mapped_column(BigInteger)
     category_id: Mapped[str | None] = mapped_column(String(100))
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     is_resolved: Mapped[bool | None] = mapped_column(Boolean)
     close_reason: Mapped[str] = mapped_column(String(40))
+    model_cost_rub: Mapped[Decimal | None] = mapped_column(Numeric(18, 9))
 
 
 class Ticket(Base):
@@ -113,6 +116,14 @@ class RagDocument(Base):
     source_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     index_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     active_version: Mapped[str] = mapped_column(String(36))
+
+
+class RagGithubSync(Base):
+    __tablename__ = "rag_github_syncs"
+
+    index_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class RagJob(Base):

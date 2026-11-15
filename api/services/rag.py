@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from pathlib import PurePath
@@ -6,9 +7,10 @@ from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
+from models.github import GITHUB_SOURCE_PREFIX
 from models.rag import DocumentTooLarge, InvalidDocument, RagDocumentNotFound, RagQueueUnavailable, RagUnavailable
 from repositories.rag_cache import RagCache
-from repositories.rag_extract import identifiers
+from repositories.rag_extract import identifiers, render_pdf_region
 from repositories.rag_files import DOCUMENT_FORMATS, MAX_DOCUMENT_BYTES, RagFiles
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
@@ -48,7 +50,7 @@ class RagService:
         self, source_id: str | None, title: str | None, filename: str, data: bytes,
         *, replaces: UUID | None = None,
     ) -> tuple[UUID, str, UUID]:
-        if source_id and source_id.startswith("confluence:"):
+        if source_id and source_id.startswith(("confluence:", GITHUB_SOURCE_PREFIX)):
             raise InvalidDocument("reserved_source_id")
         name = PurePath(filename.replace("\\", "/")).name
         format = PurePath(name).suffix.lower().removeprefix(".")
@@ -88,7 +90,7 @@ class RagService:
         await self.jobs.delete_confluence_source(self.index.key, space_id, page_id)
 
     async def submit_url(self, source_id: str | None, title: str | None, url: str) -> tuple[UUID, str]:
-        if source_id and source_id.startswith("confluence:"):
+        if source_id and source_id.startswith(("confluence:", GITHUB_SOURCE_PREFIX)):
             raise InvalidDocument("reserved_source_id")
         job_id = uuid4()
         source_id = source_id or str(uuid4())
@@ -124,7 +126,21 @@ class RagService:
             items.append(item)
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
-    async def search(self, question: str, exact_id: str | None, original: str, *, standalone: bool = False) -> list[dict]:
+    async def visual(self, block_id: str) -> bytes:
+        versions = await self.jobs.active_versions(self.index.key)
+        for chunk in await self.index.related([block_id], versions):
+            if chunk["format"] != "pdf" or not chunk.get("file_id"):
+                continue
+            for block in chunk["evidence"]:
+                if block["id"] == block_id and block["kind"] in ("visual", "scan") and block.get("box") and block.get("page"):
+                    data = await self.files.load(UUID(chunk["file_id"]))
+                    return await asyncio.to_thread(render_pdf_region, data, block["page"], block["box"])
+        raise RagDocumentNotFound
+
+    async def search(
+        self, question: str, exact_id: str | None, original: str, *,
+        standalone: bool = False, include_visual: bool = False,
+    ) -> list[dict]:
         allowed = identifiers(original) or identifiers(question)
         if exact_id and exact_id not in allowed:
             raise UnexpectedDocumentId("Unexpected document ID")
@@ -134,23 +150,30 @@ class RagService:
             raise RagUnavailable("index_unavailable") from error
         if not versions:
             return []
-        key = self.cache.key(self.index.key, versions, question, exact_id)
-        original_key = self.cache.key(self.index.key, versions, original, exact_id) if standalone else None
+        key = self.cache.key(self.index.key, versions, question, exact_id, include_visual=include_visual)
+        original_key = self.cache.key(
+            self.index.key, versions, original, exact_id, include_visual=include_visual,
+        ) if standalone else None
         results = None
         if original_key:
             results = self.read_cached(await self.cache.get_by_original(original_key))
         if results is None:
+            cacheable = True
             results = self.read_cached(await self.cache.get(key))
             if results is None:
-                results = CACHED_EVIDENCE.validate_python(await self.retrieve(question, exact_id, versions))
-                if results:
+                evidence, cacheable = await self.retrieve(question, exact_id, versions, include_visual=include_visual)
+                results = CACHED_EVIDENCE.validate_python(evidence)
+                if results and cacheable:
                     await self.cache.set(key, CACHED_EVIDENCE.dump_json(results))
-            if original_key and results:
+            if original_key and results and cacheable:
                 await self.cache.bind_original(original_key, key)
         return [
             {
-                **block.model_dump(exclude={"file_id"}),
+                **block.model_dump(exclude={"file_id", "box"}),
                 "source_url": self.files.link(block.file_id) if block.file_id else block.source_url,
+                "box": block.box if (
+                    block.file_id and block.format == "pdf" and block.kind in ("visual", "scan")
+                ) else None,
             }
             for block in results
         ]
@@ -165,12 +188,15 @@ class RagService:
             log.debug("RAG cache entry failed validation")
             return None
 
-    async def retrieve(self, question: str, exact_id: str | None, versions: list[str]) -> list[dict]:
+    async def retrieve(
+        self, question: str, exact_id: str | None, versions: list[str], *, include_visual: bool = False,
+    ) -> tuple[list[dict], bool]:
+        cacheable = True
         if exact_id:
             chunks = await self.index.exact(exact_id, versions)
             log.info("RAG retrieval (exact, %d candidates)", len(chunks))
             if not chunks:
-                return []
+                return [], cacheable
             evidence = self.evidence(chunks, exact_id)
             anchor_keys = {block["id"] for block in evidence.values()}
             links = list(dict.fromkeys(
@@ -184,10 +210,19 @@ class RagService:
                 if key not in evidence and not set(block["identifiers"]) - {exact_id}
             })
         else:
-            chunks = await self.index.semantic(question, versions)
+            chunks, visual_chunks = await self.index.semantic(question, versions, include_visual=include_visual)
             log.info("RAG retrieval (semantic, %d candidates)", len(chunks))
             related = list(dict.fromkeys(ref for chunk in chunks[:3] for ref in chunk["related"]))[:6]
             evidence = self.evidence([*chunks, *await self.index.related(related, versions)], None)
+            cacheable = visual_chunks is not None
+            if visual_chunks:
+                visual_ids = {
+                    block["id"] for chunk in visual_chunks if chunk["format"] == "pdf" and chunk.get("file_id")
+                    for block in chunk["evidence"] if block["kind"] in ("visual", "scan") and block.get("box")
+                }
+                visual_evidence = self.evidence(visual_chunks, None, visual_ids)
+                for rank, (key, block) in enumerate(visual_evidence.items(), 1):
+                    evidence.setdefault(key, block)["visual_rank"] = rank
         registries = {match.casefold() for match in REGISTRY.findall(question)}
         if len(registries) == 1:
             evidence = {
@@ -198,7 +233,7 @@ class RagService:
                     )
                 }
             }
-        return list(evidence.values())
+        return list(evidence.values()), cacheable
 
     def evidence(
         self, chunks: list[dict], identifier: str | None, linked: set[str] | None = None,

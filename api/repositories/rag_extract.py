@@ -3,9 +3,11 @@ from base64 import b64decode
 from binascii import Error as Base64Error
 from collections import Counter
 from io import BytesIO
+from threading import Lock
 from zipfile import BadZipFile, ZipFile
 
 import pdfplumber
+from pdfplumber.utils.exceptions import MalformedPDFException, PdfminerException
 from docx import Document
 from docx.oxml.ns import qn
 from docx.table import Table
@@ -16,6 +18,7 @@ from markdown_it import MarkdownIt
 from pdfminer.pdfexceptions import PDFException
 from pdfminer.psparser import PSEOF
 from PIL import Image, UnidentifiedImageError
+from pypdfium2 import PdfiumError
 
 from models.rag import Block, InvalidDocument
 
@@ -30,6 +33,7 @@ MAX_PAGES = 300
 MAX_BLOCKS = 15000
 MAX_BLOCK_CHARS = 2400
 MAX_IMAGES_BYTES = 90 * 1024 * 1024
+PDF_RENDER_LOCK = Lock()
 
 
 def identifiers(text: str) -> tuple[str, ...]:
@@ -254,10 +258,27 @@ def extract_markdown(data: bytes) -> list[Block]:
 
 def pdf_png(page, box) -> bytes:
     target = page.crop(box) if box != page.bbox else page
-    image = target.to_image(resolution=min(330, 2200 * 72 / max(target.width, target.height)))
+    with PDF_RENDER_LOCK:
+        image = target.to_image(resolution=min(330, 2200 * 72 / max(target.width, target.height)))
     buffer = BytesIO()
     image.original.convert("RGB").save(buffer, "PNG")
     return buffer.getvalue()
+
+
+def render_pdf_region(data: bytes, page_number: int, box: tuple[int, int, int, int]) -> bytes:
+    try:
+        with pdfplumber.open(BytesIO(data)) as document:
+            if not 1 <= page_number <= len(document.pages):
+                raise InvalidDocument("invalid_visual_page")
+            page = document.pages[page_number - 1]
+            left, top, right, bottom = (value / 100 for value in box)
+            x0, y0, x1, y1 = page.bbox
+            crop = max(x0, left), max(y0, top), min(x1, right), min(y1, bottom)
+            return pdf_png(page, crop)
+    except (
+        KeyError, MalformedPDFException, OSError, PDFException, PSEOF, PdfminerException, PdfiumError, ValueError,
+    ) as error:
+        raise InvalidDocument("invalid_visual_region") from error
 
 
 def pdf_table_context(lines, box) -> str:

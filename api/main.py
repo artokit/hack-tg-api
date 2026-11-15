@@ -6,6 +6,7 @@ from routes.auth import router as auth_router
 from routes.confluence import router as confluence_router
 from routes.employees import private_router as private_employees_router
 from routes.employees import router as employees_router
+from routes.github import router as github_router
 from routes.health import router as health_router
 from routes.invites import private_router as private_invites_router
 from routes.invites import router as invites_router
@@ -31,6 +32,7 @@ app.include_router(private_tickets_router, include_in_schema=False)
 app.include_router(invites_router)
 app.include_router(private_invites_router)
 app.include_router(rag_router)
+app.include_router(github_router)
 app.include_router(support_requests_router, include_in_schema=False)
 app.include_router(technical_analytics_router)
 
