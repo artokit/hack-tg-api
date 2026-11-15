@@ -6,7 +6,7 @@ import { type ClosedRequest, type CloseReason, type HandoffDraft, resolution } f
 import type { PendingUpdate } from './telegram-store.js';
 
 export type RequestPhase =
-  'answer' | 'feedback' | 'clarification' | 'details' | 'technical' | 'handoff_confirmation';
+  'answer' | 'feedback' | 'clarification' | 'details' | 'technical' | 'handoff_confirmation' | 'close_confirmation';
 
 export interface ActiveRequest {
   id: string;
@@ -45,15 +45,17 @@ export class TelegramRequests {
         INSERT INTO bars_telegram_requests (
           id, bot_id, chat_id, instance_id, opened_at, phase, latest_sequence, tracks_model_cost
         )
-        VALUES ($1, $2, $3, $4, $5, 'answer', $6, true)
+        VALUES ($1, $2, $3, $4, $5, 'technical', $6, true)
         ON CONFLICT (bot_id, chat_id) WHERE closed_at IS NULL DO UPDATE
         SET latest_sequence = greatest(bars_telegram_requests.latest_sequence, EXCLUDED.latest_sequence)
         RETURNING id, chat_id, instance_id, latest_sequence, phase, phase_sent_at
       ), pinned AS (
         UPDATE bars_telegram_updates
         SET request_id = current_request.id, instance_id = current_request.instance_id,
-          request_phase = CASE WHEN received_at < current_request.phase_sent_at
-            THEN 'answer' ELSE current_request.phase END
+          request_phase = CASE
+            WHEN current_request.phase = 'feedback' AND received_at < current_request.phase_sent_at THEN 'answer'
+            WHEN current_request.phase = 'answer' AND current_request.phase_sent_at IS NULL THEN 'technical'
+            ELSE current_request.phase END
         FROM current_request WHERE sequence = $6
         RETURNING request_phase AS phase
       )
@@ -84,32 +86,40 @@ export class TelegramRequests {
     `, [request.id, this.botId, sequence, phase, new Date(sentAt.getTime() + seconds * 1000), sentAt]);
   }
 
-  async consumeFeedback(request: ActiveRequest, sequence: string, phase: 'answer' | 'details'): Promise<void> {
+  async clearDeadline(request: ActiveRequest, sequence: string): Promise<void> {
     await this.pool.query(`
-      UPDATE bars_telegram_requests SET phase = $4, due_at = NULL, phase_sent_at = NULL
-      WHERE id = $1 AND bot_id = $2 AND latest_sequence = $3 AND closed_at IS NULL AND phase = 'feedback'
-    `, [request.id, this.botId, sequence, phase]);
+      UPDATE bars_telegram_requests SET phase = 'technical', due_at = NULL
+      WHERE id = $1 AND bot_id = $2 AND latest_sequence = $3 AND closed_at IS NULL
+    `, [request.id, this.botId, sequence]);
   }
 
-  async due(): Promise<ActiveRequest[]> {
+  async due(requestId?: string): Promise<ActiveRequest[]> {
     const result = await this.pool.query<ActiveRequest>(`
       SELECT id, chat_id, instance_id, latest_sequence, phase FROM bars_telegram_requests AS request
       WHERE bot_id = $1 AND closed_at IS NULL AND due_at <= clock_timestamp()
+        AND ($2::uuid IS NULL OR id = $2)
         AND NOT EXISTS (
           SELECT 1 FROM bars_telegram_updates AS pending
           WHERE pending.bot_id = request.bot_id AND pending.chat_id = request.chat_id
             AND pending.finished_at IS NULL
-            AND (pending.received_at <= request.due_at OR pending.request_id = request.id OR request.phase = 'answer')
         )
       ORDER BY due_at LIMIT 20
-    `, [this.botId]);
+    `, [this.botId, requestId ?? null]);
     return result.rows;
   }
 
+  async closedBy(update: PendingUpdate): Promise<CloseReason | undefined> {
+    const result = await this.pool.query<{ reason: CloseReason }>(`
+      SELECT outcome->>'close_reason' AS reason FROM bars_telegram_requests
+      WHERE id = $1 AND bot_id = $2 AND latest_sequence = $3 AND closed_at IS NOT NULL
+    `, [update.request_id, this.botId, update.sequence]);
+    return result.rows[0]?.reason;
+  }
+
   async close(
-    request: ActiveRequest, sequence: string, reason: CloseReason, handoff?: HandoffDraft,
-  ): Promise<void> {
-    await this.pool.query(`
+    request: ActiveRequest, sequence: string, reason: CloseReason, handoff?: HandoffDraft, onlyIfIdle = false,
+  ): Promise<boolean> {
+    const result = await this.pool.query(`
       UPDATE bars_telegram_requests SET
         closed_at = closed.at, finalizer_due_at = closed.at, due_at = NULL,
         outcome = jsonb_build_object(
@@ -119,7 +129,12 @@ export class TelegramRequests {
         ) || $6::jsonb
       FROM (SELECT clock_timestamp() AS at) AS closed
       WHERE id = $1 AND bot_id = $2 AND latest_sequence = $3 AND closed_at IS NULL
-    `, [request.id, this.botId, sequence, reason, resolution(reason), handoff ? { handoff } : {}]);
+        AND (NOT $7::boolean OR (due_at <= clock_timestamp() AND NOT EXISTS (
+          SELECT 1 FROM bars_telegram_updates AS pending
+          WHERE pending.bot_id = $2 AND pending.chat_id = bars_telegram_requests.chat_id AND pending.finished_at IS NULL
+        )))
+    `, [request.id, this.botId, sequence, reason, resolution(reason), handoff ? { handoff } : {}, onlyIfIdle]);
+    return result.rowCount === 1;
   }
 
   async finalizations(): Promise<Finalization[]> {

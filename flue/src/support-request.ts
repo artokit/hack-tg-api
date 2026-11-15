@@ -7,11 +7,9 @@ export const handoffDraft = v.object({
 export type HandoffDraft = v.InferOutput<typeof handoffDraft>;
 
 const handoffReason = v.picklist(['rag_exhausted', 'operator_requested']);
-export const supportHandoff = v.object({ ...handoffDraft.entries, reason: handoffReason });
-export type SupportHandoff = v.InferOutput<typeof supportHandoff>;
 
 const closeReason = v.picklist([
-  'confirmed', 'thanks', 'feedback_timeout', 'clarification_timeout', 'details_timeout',
+  'confirmed', 'thanks', 'user_closed', 'feedback_timeout', 'clarification_timeout', 'details_timeout',
   'technical_timeout', 'reset', 'delivery_failed', ...handoffReason.options,
 ]);
 export type CloseReason = v.InferOutput<typeof closeReason>;
@@ -22,22 +20,19 @@ export function resolution(reason: CloseReason): boolean | null {
   return null;
 }
 
-const operatorTarget = '(?:оператор[ау]?|специалист[ау]?|человек(?:а|у|ом)?|поддержк[ауе]|тикет[ау]?)(?![\\p{L}])';
-const imperativeRequest = new RegExp(
-  `(?<![\\p{L}])(?:передай|позови|свяжи|переключи|создай|заведи)(?:те)?[\\s,]+[^.!?]{0,100}${operatorTarget}`,
-  'iu',
+const operatorTarget = '(?:оператор(?:а|у|ом)?|специалист(?:а|у|ом)?|(?:живого )?человек(?:а|у|ом)?|поддержк[ауе]|поддержкой)';
+const operatorRequests = [
+  operatorTarget,
+  `(?:передай(?:те)?|передать|переключи(?:те)?|переключить|позови(?:те)?|позвать|свяжи(?:те)?|связаться|поговорить)\\s+(?:(?:этот вопрос|это обращение|вопрос|обращение|проблему|меня|нас|мне)\\s+)?(?:(?:на|с|в)\\s+)?${operatorTarget}`,
+  '(?:создай(?:те)?|создать|заведи(?:те)?|завести)\\s+(?:тикет|заявку)',
+].join('|');
+const operatorRequest = new RegExp(
+  `^(?:(?:спасибо|пожалуйста)[,.!\\s]+)?(?:(?:мне|нам)\\s+)?(?:(?:можешь|можете|можно(?: ли)?|хочу|прошу|давай(?:те)?|нужен|нужна)\\s+)?(?:${operatorRequests})(?:[\\s,]+пожалуйста)?$`,
+  'u',
 );
-const politeRequest = new RegExp(
-  `(?<![\\p{L}])(?:можешь|можете|можно(?: ли)?|хочу|прошу|давай(?:те)?)\\s+(?:(?:пожалуйста|мне|нам)\\s+){0,2}(?:(?:передать|позвать|связаться|поговорить|переключить|создать|завести)\\s+[^.!?]{0,100})?${operatorTarget}`,
-  'iu',
-);
-const shortOperatorRequest = new RegExp(`^${operatorTarget}[,\\s]+пожалуйста[.!\\s]*$`, 'iu');
-const deniedOperatorRequest = /(?<![\p{L}])не\s+(?:надо|нужно|хочу|передавай(?:те)?|передай(?:те)?|зови(?:те)?|создавай(?:те)?|создай(?:те)?|заводи(?:те)?|переключай(?:те)?)(?![\p{L}])/iu;
 
 export function isOperatorRequest(text: string): boolean {
-  const message = text.normalize('NFKC');
-  return !deniedOperatorRequest.test(message)
-    && (imperativeRequest.test(message) || politeRequest.test(message) || shortOperatorRequest.test(message));
+  return operatorRequest.test(text);
 }
 
 export const supportRequestClosed = 'support_request_closed';

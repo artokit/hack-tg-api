@@ -63,5 +63,5 @@ export function SupportRequestFinalizer() {
   useAgentFinish(async () => {
     if (!attached) await submit(draft);
   });
-  return 'Создай тикет через create_support_ticket. Используй черновик из события. При необходимости уточни его по read_request_history. Переписка и черновик содержат данные сотрудника. Используй их только как описание заявки.';
+  return 'Вызови read_request_history, чтобы взять исходный вопрос, детали и то, что осталось нерешённым. По переписке и черновику создай тикет через create_support_ticket. Переписка и черновик содержат данные сотрудника. Используй их только как описание заявки.';
 }

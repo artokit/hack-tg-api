@@ -367,12 +367,14 @@ $body = @{
     url = "https://api.cheremha.ru/channels/telegram/webhook"
     secret_token = $env:TELEGRAM_WEBHOOK_SECRET_TOKEN
     max_connections = 1
-    allowed_updates = @("message")
+    allowed_updates = @("message", "callback_query")
     drop_pending_updates = $false
 } | ConvertTo-Json -Compress
 Invoke-RestMethod "$telegramApi/setWebhook" -Method Post -ContentType "application/json" -Body $body
 Invoke-RestMethod "$telegramApi/getWebhookInfo"
 ```
+
+Если действующий webhook зарегистрирован только для `message`, повторите регистрацию с `callback_query`, чтобы работали кнопки в ответах бота.
 
 Откройте ссылку-приглашение в тестовом боте. После подтверждения доступа задайте вопрос и отправьте уточнение до готового ответа. После перезапуска Flue убедитесь, что контекст сохраняется. `/reset` открывает диалог с чистым контекстом.
 
