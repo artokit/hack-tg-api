@@ -93,7 +93,9 @@ class RagEvidenceRead(BaseModel):
     columns: list[str] = Field(default_factory=list)
     box: tuple[int, int, int, int] | None = None
     visual_rank: int | None = None
+    image_key: str | None = None
 
 
 class RagCachedEvidence(RagEvidenceRead):
     file_id: UUID | None
+    image_file_id: UUID | None = None

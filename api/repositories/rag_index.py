@@ -178,10 +178,11 @@ class RagIndex:
         if not include_visual:
             return await query(self.filter(versions), 8), []
         visual_filter = self.filter(versions)
-        visual_filter["must"].extend([
+        visual_filter["must"].append({"key": "evidence[].kind", "match": {"any": ["visual", "scan"]}})
+        visual_filter["should"] = [
             {"key": "format", "match": {"value": "pdf"}},
-            {"key": "evidence[].kind", "match": {"any": ["visual", "scan"]}},
-        ])
+            {"key": "has_visual_file", "match": {"value": True}},
+        ]
         chunks, visuals = await asyncio.gather(
             query(self.filter(versions), 8), query(visual_filter, 24), return_exceptions=True,
         )

@@ -161,6 +161,7 @@ export class TelegramWorker {
       let deliveryId = `submission:${submissionId}`;
       let replyText = '';
       let replyHtml: string | undefined;
+      let replyImages: string[] | undefined;
       let phase: RequestPhase = 'technical';
       let handoff: SupportHandoff | undefined;
       let supported: ReturnType<typeof supportedRagReply>;
@@ -187,6 +188,7 @@ export class TelegramWorker {
             ? supportRagReply(ragResults) : { ...renderRag(...ragResults), phase: 'answer' as const };
           replyText = rendered.text;
           replyHtml = rendered.html;
+          replyImages = rendered.images;
           phase = rendered.phase;
           available = rendered.available;
         } else if (!replyText) {
@@ -202,7 +204,9 @@ export class TelegramWorker {
       if (!replyText) deliveryId = 'failure:' + await responseSubmission(submissionId);
       const kind = replyText && available ? 'answer' : 'fallback';
       if (!request) {
-        const receipt = await this.output.send(deliveryId, update.chat_id, replyText || unavailable, kind, !!replyText, replyHtml);
+        const receipt = await this.output.send(
+          deliveryId, update.chat_id, replyText || unavailable, kind, !!replyText, replyHtml, replyImages,
+        );
         if (kind === 'answer') await this.recordReplyTiming(submissionId, receipt);
         return;
       }
@@ -214,13 +218,13 @@ export class TelegramWorker {
           const { reason, ...draft } = handoff;
           const text = supported ? `${supported.text}\n\n${handoffAnswer}` : handoffAnswer;
           await this.deliver(request, `handoff:${request.id}`, text, supported && {
-            html: `${supported.html}<p>${handoffAnswer}</p>`, rich: true,
+            html: `${supported.html}<p>${handoffAnswer}</p>`, rich: true, images: supported.images,
           });
           await this.requests.close(request, update.sequence, reason, draft);
           return;
         }
         const receipt = await this.deliver(request, deliveryId, replyText || unavailable, {
-          sequence: update.sequence, phase, html: replyHtml, rich: !!replyText, kind,
+          sequence: update.sequence, phase, html: replyHtml, rich: !!replyText, kind, images: replyImages,
         });
         if (kind === 'answer') await this.recordReplyTiming(submissionId, receipt);
       });
@@ -288,9 +292,13 @@ export class TelegramWorker {
 
   private async deliver(
     request: ActiveRequest, id: string, text: string,
-    next?: { sequence?: string; phase?: RequestPhase; rich?: boolean; html?: string; kind?: DeliveryKind },
+    next?: {
+      sequence?: string; phase?: RequestPhase; rich?: boolean; html?: string; kind?: DeliveryKind; images?: string[];
+    },
   ): Promise<DeliveryResult> {
-    const receipt = await this.output.send(id, request.chat_id, text, next?.kind ?? 'service', next?.rich ?? false, next?.html);
+    const receipt = await this.output.send(
+      id, request.chat_id, text, next?.kind ?? 'service', next?.rich ?? false, next?.html, next?.images,
+    );
     if (receipt.status !== 'sent' || !receipt.sent_at) {
       if (next?.sequence) await this.requests.close(request, next.sequence, 'delivery_failed');
       return receipt;

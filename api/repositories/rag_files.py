@@ -37,6 +37,19 @@ class RagFiles:
             raise RagUnavailable("file_service_unavailable") from error
         return file_id
 
+    async def put_visual(self, file_id: UUID, data: bytes) -> None:
+        if not self.token:
+            raise RagUnavailable("file_service_unconfigured")
+        try:
+            response = await self.http.put(
+                f"{self.base_url}/{file_id}/visual",
+                headers={"X-Bot-Token": self.token},
+                files={"file": ("screenshot.png", data, "image/png")},
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise RagUnavailable("file_service_unavailable") from error
+
     def link(self, file_id: UUID) -> str | None:
         return f"{self.public_url}/file-service/{file_id}?sig={self.signature(file_id)}" if self.token else None
 
