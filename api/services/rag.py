@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from pydantic import TypeAdapter, ValidationError
 
+from models.github import GITHUB_SOURCE_PREFIX
 from models.rag import DocumentTooLarge, InvalidDocument, RagDocumentNotFound, RagQueueUnavailable, RagUnavailable
 from repositories.rag_cache import RagCache
 from repositories.rag_extract import identifiers, render_pdf_region
@@ -49,7 +50,7 @@ class RagService:
         self, source_id: str | None, title: str | None, filename: str, data: bytes,
         *, replaces: UUID | None = None,
     ) -> tuple[UUID, str, UUID]:
-        if source_id and source_id.startswith("confluence:"):
+        if source_id and source_id.startswith(("confluence:", GITHUB_SOURCE_PREFIX)):
             raise InvalidDocument("reserved_source_id")
         name = PurePath(filename.replace("\\", "/")).name
         format = PurePath(name).suffix.lower().removeprefix(".")
@@ -89,7 +90,7 @@ class RagService:
         await self.jobs.delete_confluence_source(self.index.key, space_id, page_id)
 
     async def submit_url(self, source_id: str | None, title: str | None, url: str) -> tuple[UUID, str]:
-        if source_id and source_id.startswith("confluence:"):
+        if source_id and source_id.startswith(("confluence:", GITHUB_SOURCE_PREFIX)):
             raise InvalidDocument("reserved_source_id")
         job_id = uuid4()
         source_id = source_id or str(uuid4())

@@ -16,6 +16,7 @@ from repositories.users import UserRepository
 from services.auth import AuthService
 from services.confluence import ConfluenceService
 from services.employees import EmployeeService
+from services.github import GithubService
 from services.health import HealthService
 from services.invites import InviteService
 from services.rag import RagOriginals, RagService
@@ -123,6 +124,12 @@ def get_rag_service(request: Request) -> RagService:
     if request.app.state.rag_service is None:
         raise HTTPException(status_code=503, detail="Embedding provider is not configured")
     return request.app.state.rag_service
+
+
+def get_github_service(request: Request) -> GithubService:
+    if request.app.state.github_service is None:
+        raise HTTPException(status_code=503, detail="GitHub RAG sync is not configured")
+    return request.app.state.github_service
 
 
 def get_invite_service(
