@@ -65,6 +65,7 @@ class RagSearchRequest(BaseModel):
     question: str = Field(min_length=1, max_length=1200)
     original_question: str = Field(min_length=1, max_length=4096)
     exact_id: str | None = Field(default=None, max_length=40)
+    standalone: bool = False
 
 
 class RagEvidenceRead(BaseModel):

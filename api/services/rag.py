@@ -124,7 +124,7 @@ class RagService:
             items.append(item)
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
-    async def search(self, question: str, exact_id: str | None, original: str) -> list[dict]:
+    async def search(self, question: str, exact_id: str | None, original: str, *, standalone: bool = False) -> list[dict]:
         allowed = identifiers(original) or identifiers(question)
         if exact_id and exact_id not in allowed:
             raise UnexpectedDocumentId("Unexpected document ID")
@@ -135,17 +135,18 @@ class RagService:
         if not versions:
             return []
         key = self.cache.key(self.index.key, versions, question, exact_id)
-        cached = await self.cache.get(key)
+        original_key = self.cache.key(self.index.key, versions, original, exact_id) if standalone else None
         results = None
-        if cached is not None:
-            try:
-                results = CACHED_EVIDENCE.validate_json(cached)
-            except ValidationError:
-                log.debug("RAG cache entry failed validation")
+        if original_key:
+            results = self.read_cached(await self.cache.get_by_original(original_key))
         if results is None:
-            results = CACHED_EVIDENCE.validate_python(await self.retrieve(question, exact_id, versions))
-            if results:
-                await self.cache.set(key, CACHED_EVIDENCE.dump_json(results))
+            results = self.read_cached(await self.cache.get(key))
+            if results is None:
+                results = CACHED_EVIDENCE.validate_python(await self.retrieve(question, exact_id, versions))
+                if results:
+                    await self.cache.set(key, CACHED_EVIDENCE.dump_json(results))
+            if original_key and results:
+                await self.cache.bind_original(original_key, key)
         return [
             {
                 **block.model_dump(exclude={"file_id"}),
@@ -153,6 +154,16 @@ class RagService:
             }
             for block in results
         ]
+
+    @staticmethod
+    def read_cached(cached: bytes | None) -> list[RagCachedEvidence] | None:
+        if cached is None:
+            return None
+        try:
+            return CACHED_EVIDENCE.validate_json(cached) or None
+        except ValidationError:
+            log.debug("RAG cache entry failed validation")
+            return None
 
     async def retrieve(self, question: str, exact_id: str | None, versions: list[str]) -> list[dict]:
         if exact_id:
