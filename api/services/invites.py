@@ -1,8 +1,13 @@
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from config import InviteSettings
 from repositories.invites import InviteRepository
 from schemas.invites import InviteAccept, InviteCreate
+
+
+class InviteExpiredError(Exception):
+    pass
 
 
 class InviteService:
@@ -17,14 +22,16 @@ class InviteService:
     async def create(self, data: InviteCreate):
         if self._settings.telegram_bot_username is None:
             raise RuntimeError("TELEGRAM_BOT_USERNAME is not configured")
+        expires_at = datetime.now(UTC) + timedelta(minutes=data.expires_in_minutes)
         invite = await self._repository.create(
-            data.count_of_use, data.first_name, data.last_name
+            data.count_of_use, data.first_name, data.last_name, expires_at
         )
         return {
             "id": invite.id,
             "count_of_use": invite.count_of_use,
             "first_name": invite.first_name,
             "last_name": invite.last_name,
+            "expires_at": invite.expires_at,
             "link": (
                 f"https://t.me/{self._settings.telegram_bot_username}"
                 f"?start=invite_{invite.id}"
@@ -38,8 +45,9 @@ class InviteService:
         return invite
 
     async def get_all(self, page: int, page_size: int):
-        items = await self._repository.get_all((page - 1) * page_size, page_size)
-        total = await self._repository.count()
+        items, total = await self._repository.get_active_page(
+            (page - 1) * page_size, page_size, datetime.now(UTC)
+        )
         return {
             "items": items,
             "total": total,
@@ -55,6 +63,8 @@ class InviteService:
         invite = await self._repository.lock_for_accept(invite_id)
         if invite is None:
             raise LookupError("Invite not found")
+        if invite.expires_at is not None and invite.expires_at <= datetime.now(UTC):
+            raise InviteExpiredError
         return await self._repository.accept(
             invite,
             data.telegram_id,

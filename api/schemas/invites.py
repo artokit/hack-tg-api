@@ -1,12 +1,13 @@
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 
 class InviteCreate(BaseModel):
     count_of_use: int = Field(default=1, ge=1, le=2**31 - 1, strict=True)
     first_name: str | None = Field(default=None, max_length=255)
     last_name: str | None = Field(default=None, max_length=255)
+    expires_in_minutes: int = Field(default=24 * 60, ge=1, le=2**31 - 1, strict=True)
 
     @model_validator(mode="after")
     def validate_single_use_names(self):
@@ -24,6 +25,7 @@ class InviteRead(BaseModel):
     count_of_use: int
     first_name: str | None
     last_name: str | None
+    expires_at: AwareDatetime | None
 
 
 class InviteCreated(InviteRead):
