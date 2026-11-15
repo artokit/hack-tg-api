@@ -27,6 +27,7 @@ class RagIndex:
         *, qdrant: str = "http://qdrant:6333", collection: str = "bars_docs_qwen3_v1",
     ):
         self.http = http
+        self.prepare_lock = asyncio.Lock()
         self.collection = collection
         self.qdrant = qdrant.rstrip("/")
         self.embedding = base_url.rstrip("/") + "/embeddings"
@@ -117,7 +118,8 @@ class RagIndex:
                 raise RagUnavailable("index_incompatible")
 
     async def write(self, version: str, entries: list[dict]) -> None:
-        await self.prepare()
+        async with self.prepare_lock:
+            await self.prepare()
         async def write_batch(start: int) -> None:
             batch = entries[start:start + PAGE_SIZE]
             vectors = await self.vectors([entry["search_text"] for entry in batch])
