@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import Ticket
+from db.models import SupportRequest, Ticket
 
 
 class TicketRepository:
@@ -15,6 +15,19 @@ class TicketRepository:
         return await self._session.scalar(
             select(Ticket).where(Ticket.support_request_id == request_id)
         )
+
+    async def jira_recipient(self, external_key: str, external_id: str) -> SupportRequest | None:
+        return (await self._session.scalars(
+            select(SupportRequest)
+            .join(Ticket, Ticket.support_request_id == SupportRequest.id)
+            .where(
+                Ticket.system == "jsm",
+                Ticket.external_key == external_key,
+                Ticket.external_id == external_id,
+            )
+            .limit(2)
+        )).one_or_none()
+
     async def get_for_update(self, ticket_id: int) -> Ticket | None:
         return await self._session.get(Ticket, ticket_id, with_for_update=True)
 

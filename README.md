@@ -163,6 +163,54 @@ curl.exe -X POST "http://127.0.0.1:8000/private/tickets/2/attachments" -H "X-Bot
 
 Эндпоинт не создаёт тикет и не меняет локальную БД. Повторная успешная отправка добавляет новое вложение. При тайм-ауте результат может быть неизвестен: перед повтором проверьте вложения в Jira.
 
+## Ответы из Jira в Telegram
+
+Flue принимает публичные комментарии Jira, получает адресата через API и отправляет текст в Telegram без вызова модели. Связь уже хранится в API: `tickets.external_key` и `external_id` → `tickets.support_request_id` → `support_requests.telegram_chat_id`. Задачи без связанного Telegram-обращения не рассылаются.
+
+1. Используется существующий `BOT_API_TOKEN` из корневого `.env`; его значение должно совпадать с настройкой API. Отдельный секрет для Jira не нужен. Ограничьте доступ к редактированию правила Jira: этот токен также даёт доступ к приватным ручкам API.
+2. Пересоберите API и Flue: `docker compose up -d --build --wait api flue`. Для локальной разработки перезапустите локальный API и выполните `docker compose -f docker-compose-dev.yml up -d --build --wait flue`. Flue создаёт таблицу очереди при старте; новой миграции API не требуется.
+3. Добавьте точный маршрут в HTTPS-блок Nginx, заменив порт на свой `FLUE_PORT`, если он отличается:
+
+```nginx
+location = /flue/channels/jira/webhook {
+    client_max_body_size 256k;
+    proxy_pass http://127.0.0.1:3000/channels/jira/webhook;
+}
+```
+
+В проекте GGFX откройте Settings → Automation → Create rule:
+
+- Триггер: **Issue commented / Work item commented**, тип **All comments**.
+- Smart values condition: `{{comment.internal}}` **equals** `false`.
+- Для отправки только ответов поддержки добавьте User condition: автор комментария / инициатор входит в вашу группу агентов поддержки. Иначе будут пересылаться и публичные комментарии клиента.
+- Действие **Send web request**: `POST https://api.cheremha.ru/flue/channels/jira/webhook`.
+- Заголовки: `Content-Type: application/json` и скрытый `X-Webhook-Secret: <значение BOT_API_TOKEN>`.
+- Web request body: **Custom data**:
+
+```json
+{
+  "event": "jira.comment.created",
+  "issue_key": "{{issue.key}}",
+  "issue_id": "{{issue.id}}",
+  "comment_id": "{{comment.id}}",
+  "comment": {{comment.body.asJsonString}},
+  "author": {{comment.author.displayName.asJsonString}},
+  "internal": {{comment.internal}},
+  "created_at": "{{comment.created}}",
+  "issue_url": "{{issue.url}}"
+}
+```
+
+У `asJsonString` и `internal` не должно быть внешних кавычек. Поле `internal` обязательно: обработчик принимает только JSON-значение `false`, а не строку. Изменения существующих комментариев не пересылаются.
+
+Ответ `202` означает запись в очередь, а не подтверждение доставки в Telegram. Повтор события с теми же `issue_id` и `comment_id` получает `202` со статусом `duplicate`, повторного сообщения не создаёт. Без настроенного секрета обработчик возвращает `503`, при неверном секрете — `401`, при неверном JSON или непубличном комментарии — `400`, при слишком большом запросе — `413`.
+
+Получателя читает только Flue через `GET /private/tickets/by-external-key/{issue_key}/recipient?issue_id={issue_id}` с `X-Bot-Token`. API проверяет одновременно ключ, ID и систему `jsm`; неоднозначная привязка не используется. При отсутствии получателя API возвращает `404`. Flue повторяет поиск до 10 попыток с задержкой, чтобы пережить комментарий сразу после создания задачи, затем помечает событие `ignored`. Временная недоступность API повторяется в фоне. Прямого доступа Flue к таблицам API нет.
+
+Проверка вручную: создайте обращение через бота с передачей оператору, дождитесь задачи Jira и добавьте **Reply to customer**. В Audit log Jira должен появиться `202`, в Telegram — ответ по ключу задачи. Внутренняя заметка не должна отправляться. Повтор того же webhook не должен давать второе сообщение.
+
+Результат виден в логах Flue (`Jira comment delivery`) и в его таблице `bars_jira_comments`: `sent`, `failed`, `unknown`, `ignored` или ожидающий `queued`. Текст очищается из очереди после обработки, ключ дедупликации сохраняется. При неопределённом результате Telegram (`unknown`, например обрыв соединения во время отправки) автоматической повторной отправки нет во избежание дублей; нужна ручная проверка чата. При блокировке бота доставка получает `failed`.
+
 ## Confluence
 
 `GET /confluence/pages?space_id=D1uivli2U08p&page_id=491522` получает страницу через Confluence Cloud REST API v2. Передавайте заголовок `X-Bot-Token` со значением `BOT_API_TOKEN`. В `space_id` можно передать числовой ID пространства или его ключ из URL. При несовпадении пространства и страницы API возвращает `404`.
