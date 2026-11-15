@@ -119,7 +119,8 @@ export default {
         finalizer_attempt integer NOT NULL DEFAULT 0,
         finalizer_due_at timestamptz,
         finalized_at timestamptz,
-        tracks_response_metrics boolean NOT NULL DEFAULT false
+        tracks_response_metrics boolean NOT NULL DEFAULT false,
+        kb_search_count integer CHECK (kb_search_count >= 0)
       );
 
       CREATE UNIQUE INDEX IF NOT EXISTS bars_telegram_active_request
@@ -176,6 +177,7 @@ export default {
     try {
       await pool.query('SELECT tracks_response_metrics FROM bars_telegram_requests LIMIT 0');
       await pool.query('SELECT has_answer, has_clarification FROM bars_telegram_request_events LIMIT 0');
+      await pool.query('SELECT kb_search_count FROM bars_telegram_requests LIMIT 0');
     } catch (error) {
       throw new Error('Apply API migrations before starting Flue with response metrics', { cause: error });
     }

@@ -30,10 +30,14 @@ WITH event_flags AS (
         coalesce((to_jsonb(runtime)->>'tracks_response_metrics')::boolean, false)
             AND coalesce(events.unknown_reply_count, 0) = 0 AS response_metrics_complete,
         coalesce(events.answer_count, 0)::integer AS recorded_answers,
-        coalesce(events.clarification_count, 0)::integer AS recorded_clarifications
+        coalesce(events.clarification_count, 0)::integer AS recorded_clarifications,
+        (to_jsonb(runtime)->>'kb_search_count')::integer AS kb_search_count
     FROM public.support_requests AS saved
     FULL JOIN public.bars_telegram_requests AS runtime ON runtime.id = saved.id
     LEFT JOIN event_counts AS events ON events.request_id = coalesce(saved.id, runtime.id)
+    WHERE saved.id IS NOT NULL OR runtime.outcome IS NOT NULL
+        OR NOT coalesce((to_jsonb(runtime)->>'conversation_only')::boolean, false)
+        OR coalesce((to_jsonb(runtime)->>'kb_search_count')::integer, 0) > 0
 ), outcomes AS (
     SELECT
         *,
@@ -87,6 +91,13 @@ SELECT
     CASE WHEN response_metrics_complete THEN
         CASE WHEN bot_resolved AND recorded_answers = 1 AND recorded_clarifications = 0
             THEN 100.0::double precision ELSE 0.0 END
-    END AS first_answer_resolved_percent
+    END AS first_answer_resolved_percent,
+    kb_search_count,
+    CASE WHEN kb_search_count IS NOT NULL THEN 100.0::double precision ELSE 0.0 END
+        AS kb_search_coverage_percent,
+    CASE WHEN kb_search_count IS NOT NULL THEN
+        CASE WHEN bot_resolved AND kb_search_count = 1
+            THEN 100.0::double precision ELSE 0.0 END
+    END AS first_kb_search_resolved_percent
 FROM outcomes
 WHERE close_reason IS DISTINCT FROM 'reset'
