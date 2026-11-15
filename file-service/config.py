@@ -13,6 +13,7 @@ S3_STORAGE_URL = os.getenv("S3_STORAGE_URL")
 S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY")
 S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
+BOT_API_TOKEN = os.getenv("BOT_API_TOKEN")
 
 DATABASE_URL = URL.create(
     "postgresql+asyncpg",

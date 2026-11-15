@@ -5,6 +5,8 @@ import { type Api, type SessionFlavor, Composer, Context } from 'grammy';
 import { Bars } from './agents/bars.js';
 import { responseSubmission } from './db.js';
 import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employees-api.js';
+import { renderChatReply } from './telegram-chat.js';
+import { renderRag } from './telegram-rag.js';
 import { TelegramOutput } from './telegram-output.js';
 import { type PendingUpdate, TelegramStore } from './telegram-store.js';
 
@@ -119,11 +121,19 @@ export class TelegramWorker {
       const stopTyping = this.output.beginTyping(update.chat_id);
       let deliveryId = `submission:${submissionId}`;
       let replyText = '';
+      let replyHtml: string | undefined;
       try {
         const reply = await agent.read(submissionId);
         const responseId = reply.metadata?.telegramResponseId;
         if (typeof responseId === 'string') deliveryId = `response:${responseId}`;
-        replyText = reply.text.trim();
+        const ragResults = reply.data.ragAnswer;
+        if (ragResults?.length) {
+          const rendered = renderRag(...ragResults);
+          replyText = rendered.text;
+          replyHtml = rendered.html;
+        } else {
+          replyText = renderChatReply(...(reply.data.chatAnswer ?? [])) ?? '';
+        }
       } catch (error) {
         if (!(error instanceof AgentRunError)) throw error;
         this.logFailure(update, error);
@@ -131,7 +141,7 @@ export class TelegramWorker {
         stopTyping();
       }
       if (!replyText) deliveryId = 'failure:' + await responseSubmission(submissionId);
-      await this.output.send(deliveryId, update.chat_id, replyText || unavailable, !!replyText);
+      await this.output.send(deliveryId, update.chat_id, replyText || unavailable, !!replyText, replyHtml);
     });
   }
 

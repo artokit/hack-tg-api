@@ -11,8 +11,10 @@ class EmployeeRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
 
-    async def get_by_id(self, employee_id: UUID) -> Employee | None:
-        return await self._session.get(Employee, employee_id)
+    async def get_by_id(
+        self, employee_id: UUID, *, refresh: bool = False
+    ) -> Employee | None:
+        return await self._session.get(Employee, employee_id, populate_existing=refresh)
 
     async def get_by_telegram_id(self, telegram_id: int) -> Employee | None:
         return await self._session.scalar(
@@ -38,6 +40,21 @@ class EmployeeRepository:
         except Exception:
             await self._session.rollback()
             raise
+
+    async def update_names(
+        self, employee: Employee, names: dict[str, str | None]
+    ) -> Employee:
+        if "first_name" in names:
+            employee.first_name = names["first_name"]
+        if "last_name" in names:
+            employee.last_name = names["last_name"]
+        try:
+            await self._session.commit()
+        except Exception:
+            await self._session.rollback()
+            raise
+        await self._session.refresh(employee)
+        return employee
 
     async def update_from_telegram(
         self,

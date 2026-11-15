@@ -2,8 +2,10 @@ import { createTelegramChannel } from '@flue/telegram';
 import { Api } from 'grammy';
 import { Hono } from 'hono';
 
+import { confluenceChannel } from './channels/confluence.js';
 import { httpUrl, required, webhookSecret } from './config.js';
 import { pool } from './db.js';
+import { ragModel } from './rag-model.js';
 import { TelegramStore } from './telegram-store.js';
 import { TelegramWorker } from './telegram-worker.js';
 
@@ -49,5 +51,7 @@ app.get('/health', async (c) => {
   }
 });
 app.route('/channels/telegram', channel.route());
+app.route('/channels/confluence', confluenceChannel);
+app.route('/internal/rag', ragModel);
 
 export default app;

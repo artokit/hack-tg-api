@@ -8,6 +8,7 @@ from schemas.employees import (
     EmployeePage,
     EmployeeRead,
     EmployeeTelegramUpdate,
+    EmployeeUpdate,
 )
 from services.employees import EmployeeService
 from utils.exceptions import EmployeeCacheUnavailableError
@@ -71,6 +72,20 @@ async def update_employee_from_telegram(
 ):
     try:
         return await service.update_from_telegram(telegram_id, data)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail="Employee not found") from error
+    except EmployeeCacheUnavailableError as error:
+        raise HTTPException(status_code=503, detail="Employee cache unavailable") from error
+
+
+@router.patch("/employees/{employee_id}", response_model=EmployeeRead)
+async def update_employee(
+    employee_id: UUID,
+    data: EmployeeUpdate,
+    service: EmployeeService = Depends(get_employee_service),
+):
+    try:
+        return await service.update(employee_id, data)
     except LookupError as error:
         raise HTTPException(status_code=404, detail="Employee not found") from error
     except EmployeeCacheUnavailableError as error:

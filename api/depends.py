@@ -14,9 +14,11 @@ from repositories.invites import InviteRepository
 from repositories.tickets import TicketRepository
 from repositories.users import UserRepository
 from services.auth import AuthService
+from services.confluence import ConfluenceService
 from services.employees import EmployeeService
 from services.health import HealthService
 from services.invites import InviteService
+from services.rag import RagOriginals, RagService
 from services.ticket_service import TicketAttachmentService, TicketService
 from tickets.registry import build_adapter
 
@@ -108,8 +110,22 @@ def require_bot_token(
         raise HTTPException(status_code=401, detail="Invalid or missing bot token")
 
 
+def get_rag_originals(request: Request) -> RagOriginals:
+    return request.app.state.rag_originals
+
+
+def get_rag_service(request: Request) -> RagService:
+    if request.app.state.rag_service is None:
+        raise HTTPException(status_code=503, detail="Embedding provider is not configured")
+    return request.app.state.rag_service
+
+
 def get_invite_service(
     session: AsyncSession = Depends(get_async_session),
     settings: InviteSettings = Depends(get_invite_settings),
 ) -> InviteService:
     return InviteService(InviteRepository(session), settings)
+
+
+def get_confluence_service(request: Request) -> ConfluenceService:
+    return request.app.state.confluence_service

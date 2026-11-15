@@ -29,6 +29,13 @@ services:
       timeout: 3s
       retries: 10
 
+  redis-rag:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "${RAG_REDIS_MAXMEMORY:-64mb}", "--maxmemory-policy", "allkeys-lfu"]
+    ports:
+      - "127.0.0.1:${RAG_REDIS_PORT:-6380}:6379"
+
   file-postgres:
     image: postgres:16-alpine
     restart: unless-stopped
