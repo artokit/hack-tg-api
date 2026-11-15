@@ -35,3 +35,7 @@ class TicketAttachmentRead(BaseModel):
     comment_id: str
     filename: str
     public: bool
+
+
+class TicketRecipientRead(BaseModel):
+    telegram_chat_id: str

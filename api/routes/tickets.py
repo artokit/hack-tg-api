@@ -1,13 +1,13 @@
 from pathlib import PureWindowsPath
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Path, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Path, Query, UploadFile
 
 from config import InviteSettings
 from depends import (
     get_invite_settings, get_support_request_service,
     get_ticket_attachment_service, get_ticket_service, require_bot_token,
 )
-from schemas.ticket import TicketAttachmentRead, TicketCreate, TicketRead
+from schemas.ticket import TicketAttachmentRead, TicketCreate, TicketRead, TicketRecipientRead
 from services.support_requests import SupportRequestConflict, SupportRequestNotFound, SupportRequestService
 from services.ticket_service import TicketAttachmentService, TicketLookupError, TicketService
 from tickets.jsm import TicketSystemError
@@ -17,6 +17,19 @@ private_router = APIRouter(
     prefix="/private/tickets", tags=["tickets"], dependencies=[Depends(require_bot_token)],
 )
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
+
+
+@private_router.get("/by-external-key/{external_key}/recipient", response_model=TicketRecipientRead)
+async def read_ticket_recipient(
+    external_key: str = Path(min_length=3, max_length=100, pattern=r"^[A-Z][A-Z0-9_]*-[1-9][0-9]*$"),
+    issue_id: str = Query(max_length=100, pattern=r"^[1-9][0-9]*$"),
+    service: TicketService = Depends(get_ticket_service),
+):
+    try:
+        request = await service.jira_recipient(external_key, issue_id)
+        return TicketRecipientRead(telegram_chat_id=str(request.telegram_chat_id))
+    except TicketLookupError as error:
+        raise HTTPException(status_code=error.status_code, detail=str(error)) from error
 
 
 @router.post("", response_model=TicketRead, status_code=201)

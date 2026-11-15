@@ -134,6 +134,21 @@ export default {
         UNIQUE (request_id, event_key),
         CHECK (text IS NOT NULL OR update_sequence IS NOT NULL)
       );
+
+      CREATE TABLE IF NOT EXISTS bars_jira_comments (
+        bot_id text NOT NULL,
+        issue_id text NOT NULL,
+        comment_id text NOT NULL,
+        payload jsonb,
+        status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sent', 'failed', 'unknown', 'ignored')),
+        attempts integer NOT NULL DEFAULT 0,
+        received_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        next_attempt_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+        finished_at timestamptz,
+        PRIMARY KEY (bot_id, issue_id, comment_id)
+      );
+      CREATE INDEX IF NOT EXISTS bars_jira_pending_comments
+        ON bars_jira_comments (bot_id, next_attempt_at) WHERE status = 'queued';
     `);
   },
 };
