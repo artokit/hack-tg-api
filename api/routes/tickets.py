@@ -2,13 +2,15 @@ from pathlib import PureWindowsPath
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, UploadFile
 
-from depends import get_ticket_attachment_service, get_ticket_service
+from depends import get_ticket_attachment_service, get_ticket_service, require_bot_token
 from schemas.ticket import TicketAttachmentRead, TicketCreate, TicketRead
 from services.ticket_service import TicketAttachmentService, TicketLookupError, TicketService
 from tickets.jsm import TicketSystemError
 
 router = APIRouter(prefix="/tickets", tags=["tickets"])
-private_router = APIRouter(prefix="/private/tickets", tags=["tickets"])
+private_router = APIRouter(
+    prefix="/private/tickets", tags=["tickets"], dependencies=[Depends(require_bot_token)],
+)
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 
 
