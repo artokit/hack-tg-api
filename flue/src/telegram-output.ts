@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { Api, GrammyError, InputFile } from 'grammy';
+import { Api, GrammyError, type InlineKeyboard, InputFile } from 'grammy';
 
 import { fetchRagImage } from './rag-visual.js';
 import { recordDelivery } from './telemetry.js';
@@ -83,13 +83,14 @@ export class TelegramOutput {
 
   async send(
     id: string, chatId: string, text: string, kind: DeliveryKind, markdown: boolean, html?: string, images?: string[],
+    keyboard?: InlineKeyboard,
   ): Promise<DeliveryResult> {
     const media = html && images?.length ? await loadReplyPhotos(images) : [];
     if (!await this.store.claimDelivery(id, kind)) return this.store.delivery(id);
     const startedAt = Date.now();
     let status: DeliveryStatus = 'sent';
     try {
-      await this.sendMessage(chatId, text, markdown, html, media);
+      await this.sendMessage(chatId, text, markdown, html, media, keyboard);
     } catch (error) {
       status = error instanceof GrammyError && error.error_code < 500 ? 'failed' : 'unknown';
       console.warn('Telegram delivery', status, id, error instanceof Error ? error.name : 'Error');
@@ -102,11 +103,13 @@ export class TelegramOutput {
 
   private async sendMessage(
     chatId: string, text: string, markdown: boolean, html: string | undefined, media: ReplyPhoto[],
+    keyboard?: InlineKeyboard,
   ): Promise<void> {
+    const options = keyboard && { reply_markup: keyboard };
     if (html && media.length) {
       const photos = media.map(({ id }) => `<img src="tg://photo?id=${id}"/>`).join('');
       try {
-        await withRateLimit(() => this.client.sendRichMessage(chatId, { html: html + photos, media }));
+        await withRateLimit(() => this.client.sendRichMessage(chatId, { html: html + photos, media }, options));
         return;
       } catch (error) {
         if (!(error instanceof GrammyError) || ![400, 413].includes(error.error_code)) throw error;
@@ -114,14 +117,15 @@ export class TelegramOutput {
     }
     if (html || markdown) {
       try {
-        await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }));
+        await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }, options));
         return;
       } catch (error) {
         if (!(error instanceof GrammyError) || error.error_code !== 400) throw error;
       }
     }
-    for (const part of splitReply(text)) {
-      await withRateLimit(() => this.client.sendMessage(chatId, part));
+    const parts = splitReply(text);
+    for (const [index, part] of parts.entries()) {
+      await withRateLimit(() => this.client.sendMessage(chatId, part, index === parts.length - 1 ? options : undefined));
     }
   }
 }

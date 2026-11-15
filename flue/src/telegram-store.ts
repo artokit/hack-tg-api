@@ -1,5 +1,6 @@
 import type { StateSession } from '@kalutskii/grammy-fsm';
 import type { Pool } from 'pg';
+import type { SupportAction } from './keyboards/support.js';
 import type { RequestPhase } from './telegram-requests.js';
 
 export interface IncomingMessage {
@@ -8,6 +9,7 @@ export interface IncomingMessage {
   firstName?: string | null;
   lastName?: string | null;
   username?: string | null;
+  supportAction?: SupportAction;
 }
 
 export interface PendingUpdate {
@@ -31,7 +33,7 @@ export interface DeliveryReceipt {
   sent_at: Date | null;
 }
 
-export const resetAnswer = 'Диалог сброшен. Можешь написать новый вопрос.';
+export const resetAnswer = 'Диалог сброшен. Можете написать новый вопрос.';
 
 export class TelegramStore {
   constructor(private readonly pool: Pool, private readonly botId: string) {}

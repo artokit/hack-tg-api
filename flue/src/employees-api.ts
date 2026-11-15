@@ -1,8 +1,8 @@
 import { botRequest } from './bot-api.js';
 import type { IncomingMessage } from './telegram-store.js';
 
-export const accessDenied = 'Доступ к боту только для сотрудников. Попроси действующее приглашение.';
-export const accessGranted = 'Тебя добавили в бота. Теперь можешь задавать вопросы.';
+export const accessDenied = 'Доступ к боту только для сотрудников. Попросите действующее приглашение.';
+export const accessGranted = 'Вам открыли доступ к боту. Можете задавать вопросы.';
 
 function telegramProfile(message: IncomingMessage) {
   return {

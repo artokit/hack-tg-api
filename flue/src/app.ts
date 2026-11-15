@@ -9,6 +9,7 @@ import { httpUrl, required, webhookSecret } from './config.js';
 import { pool } from './db.js';
 import { JiraStore } from './jira-store.js';
 import { JiraWorker } from './jira-worker.js';
+import { parseSupportAction, supportActionText } from './keyboards/support.js';
 import { ragModel } from './rag-model.js';
 import { TelegramOutput } from './telegram-output.js';
 import { TelegramRequests } from './telegram-requests.js';
@@ -29,6 +30,16 @@ export const jiraWorker = new JiraWorker(jiraStore, new TelegramOutput(client, s
 const channel = createTelegramChannel({
   secretToken: webhookSecret(),
   async webhook({ update }) {
+    const callback = update.callback_query;
+    const action = parseSupportAction(callback?.data);
+    if (callback?.message?.chat.type === 'private' && action) {
+      await store.enqueue(update.update_id, callback.message.chat.id, {
+        text: supportActionText[action.kind], userId: callback.from.id, supportAction: action,
+        firstName: callback.from.first_name, lastName: callback.from.last_name, username: callback.from.username,
+      });
+      void worker.scan();
+      return { method: 'answerCallbackQuery', callback_query_id: callback.id };
+    }
     const message = update.message;
     const text = message?.text?.trim();
     if (!message?.from || message.chat.type !== 'private' || !text) return undefined;

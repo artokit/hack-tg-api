@@ -174,7 +174,7 @@ async function answerFromDocs(
     if (parts.length > 6) {
       result = { status: 'clarify', parts: [{
         question, status: 'ambiguous', statement: '', source_ids: [],
-        clarification: 'Укажи до шести пунктов за один вопрос.',
+        clarification: 'Укажите до шести пунктов за один вопрос.',
       }], sources: [] };
     } else {
       const searches = await measureRag('search', async () => {
@@ -276,7 +276,7 @@ async function answerFromDocs(
   return result;
 }
 
-export function answerTool(agent: Agent, question: string, write: (data: RagDelivery) => boolean) {
+export function answerTool(agent: Agent, question: string, write: (data: RagDelivery) => void) {
   return defineTool({
     name: 'answer_from_docs',
     timeoutMs: 55_000,
@@ -299,14 +299,13 @@ export function answerTool(agent: Agent, question: string, write: (data: RagDeli
       const result = await answerFromDocs(
         agent, question, questions, !lookup || lookup.kind === 'standalone', signal,
       );
-      const handoffRequired = write(result);
+      write(result);
       return {
         output: {
           status: result.status,
           parts: result.status === 'unavailable' ? [] : result.parts,
-          handoff_required: handoffRequired,
         },
-        terminate: !handoffRequired,
+        terminate: true,
       };
     },
   });
