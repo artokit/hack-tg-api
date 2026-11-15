@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import re
 
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
@@ -28,8 +29,19 @@ class RagCache:
             log.debug("RAG cache read unavailable (%s)", type(error).__name__)
             return None
 
-    async def set(self, key: str, evidence: bytes) -> None:
+    async def set(self, key: str, value: bytes) -> None:
         try:
-            await self.redis.set(key, evidence, ex=self.ttl_seconds)
+            await self.redis.set(key, value, ex=self.ttl_seconds)
         except RedisError as error:
             log.debug("RAG cache write unavailable (%s)", type(error).__name__)
+
+    async def get_by_original(self, original_key: str) -> bytes | None:
+        suffix = await self.get(f"{original_key}:original")
+        if not isinstance(suffix, bytes) or not re.fullmatch(rb"[0-9a-f]{64}", suffix):
+            return None
+        scope, _, _ = original_key.rpartition(":")
+        return await self.get(f"{scope}:{suffix.decode('ascii')}")
+
+    async def bind_original(self, original_key: str, query_key: str) -> None:
+        _, _, suffix = query_key.rpartition(":")
+        await self.set(f"{original_key}:original", suffix.encode("ascii"))

@@ -185,7 +185,9 @@ async def delete_document(job_id: UUID, service: Service):
 )
 async def search(query: RagSearchRequest, service: Service):
     try:
-        return await service.search(query.question, query.exact_id, query.original_question)
+        return await service.search(
+            query.question, query.exact_id, query.original_question, standalone=query.standalone,
+        )
     except UnexpectedDocumentId as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except RagUnavailable as error:
