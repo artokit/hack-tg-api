@@ -3,6 +3,7 @@ from fastapi import FastAPI
 
 from lifespan import lifespan
 from routes.auth import router as auth_router
+from routes.bans import router as bans_router
 from routes.confluence import router as confluence_router
 from routes.employees import private_router as private_employees_router
 from routes.employees import router as employees_router
@@ -23,6 +24,7 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 app.include_router(auth_router)
+app.include_router(bans_router)
 app.include_router(confluence_router)
 app.include_router(health_router)
 app.include_router(employees_router)

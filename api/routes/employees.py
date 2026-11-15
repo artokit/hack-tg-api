@@ -1,8 +1,10 @@
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 
 from depends import get_current_user, get_employee_service, require_bot_token
+from schemas.bans import UserBannedRead
 from schemas.employees import (
     EmployeeCreate,
     EmployeePage,
@@ -11,7 +13,8 @@ from schemas.employees import (
     EmployeeUpdate,
 )
 from services.employees import EmployeeService
-from utils.exceptions import EmployeeCacheUnavailableError
+from services.bans import UserBannedError
+from utils.exceptions import BanUnavailableError, EmployeeCacheUnavailableError
 
 router = APIRouter(tags=["employees"], dependencies=[Depends(get_current_user)])
 private_router = APIRouter(
@@ -44,10 +47,12 @@ async def create_employee(
 
 
 @router.get(
-    "/employees/by-telegram-id/{telegram_id}", response_model=EmployeeRead
+    "/employees/by-telegram-id/{telegram_id}", response_model=EmployeeRead,
+    responses={429: {"model": UserBannedRead}},
 )
 @private_router.get(
-    "/employees/by-telegram-id/{telegram_id}", response_model=EmployeeRead
+    "/employees/by-telegram-id/{telegram_id}", response_model=EmployeeRead,
+    responses={429: {"model": UserBannedRead}},
 )
 async def get_employee_by_telegram_id(
     telegram_id: int,
@@ -55,6 +60,14 @@ async def get_employee_by_telegram_id(
 ):
     try:
         employee = await service.get_by_telegram_id(telegram_id)
+    except UserBannedError as error:
+        return JSONResponse(
+            status_code=429,
+            content=UserBannedRead(retry_after_seconds=error.retry_after_seconds).model_dump(),
+            headers={"Retry-After": str(error.retry_after_seconds)},
+        )
+    except BanUnavailableError as error:
+        raise HTTPException(status_code=503, detail="Ban storage unavailable") from error
     except EmployeeCacheUnavailableError as error:
         raise HTTPException(status_code=503, detail="Employee cache unavailable") from error
     if employee is None:

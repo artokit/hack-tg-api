@@ -120,19 +120,27 @@ export class TelegramRequests {
     request: ActiveRequest, sequence: string, reason: CloseReason, handoff?: HandoffDraft, onlyIfIdle = false,
   ): Promise<boolean> {
     const result = await this.pool.query(`
-      UPDATE bars_telegram_requests SET
-        closed_at = closed.at, finalizer_due_at = closed.at, due_at = NULL,
-        outcome = jsonb_build_object(
-          'request_id', id, 'instance_id', instance_id, 'telegram_chat_id', chat_id::text,
-          'category_id', NULL, 'opened_at', opened_at, 'closed_at', closed.at,
-          'close_reason', $4::text, 'is_resolved', $5::boolean
-        ) || $6::jsonb
-      FROM (SELECT clock_timestamp() AS at) AS closed
-      WHERE id = $1 AND bot_id = $2 AND latest_sequence = $3 AND closed_at IS NULL
-        AND (NOT $7::boolean OR (due_at <= clock_timestamp() AND NOT EXISTS (
-          SELECT 1 FROM bars_telegram_updates AS pending
-          WHERE pending.bot_id = $2 AND pending.chat_id = bars_telegram_requests.chat_id AND pending.finished_at IS NULL
-        )))
+      WITH closed_request AS (
+        UPDATE bars_telegram_requests SET
+          closed_at = closed.at, finalizer_due_at = closed.at, due_at = NULL,
+          outcome = jsonb_build_object(
+            'request_id', id, 'instance_id', instance_id, 'telegram_chat_id', chat_id::text,
+            'category_id', NULL, 'opened_at', opened_at, 'closed_at', closed.at,
+            'close_reason', $4::text, 'is_resolved', $5::boolean
+          ) || $6::jsonb
+        FROM (SELECT clock_timestamp() AS at) AS closed
+        WHERE id = $1 AND bot_id = $2 AND latest_sequence = $3 AND closed_at IS NULL
+          AND (NOT $7::boolean OR (due_at <= clock_timestamp() AND NOT EXISTS (
+            SELECT 1 FROM bars_telegram_updates AS pending
+            WHERE pending.bot_id = $2 AND pending.chat_id = bars_telegram_requests.chat_id AND pending.finished_at IS NULL
+          )))
+        RETURNING bot_id, chat_id
+      ), cleared_session AS (
+        UPDATE bars_telegram_sessions AS session SET state = NULL
+        FROM closed_request
+        WHERE session.bot_id = closed_request.bot_id AND session.chat_id = closed_request.chat_id
+      )
+      SELECT chat_id FROM closed_request
     `, [request.id, this.botId, sequence, reason, resolution(reason), handoff ? { handoff } : {}, onlyIfIdle]);
     return result.rowCount === 1;
   }
@@ -164,9 +172,9 @@ export class TelegramRequests {
 
 export async function requestHistory(pool: Pool, request: ClosedRequest) {
   const result = await pool.query<{
-    role: 'user' | 'assistant'; text: string | null; submission_id: string | null;
+    role: 'user' | 'assistant'; text: string | null; submission_id: string | null; occurred_at: Date;
   }>(`
-    SELECT event.role, event.text, incoming.submission_id
+    SELECT event.role, event.text, incoming.submission_id, event.occurred_at
     FROM bars_telegram_request_events AS event
     JOIN bars_telegram_requests AS request ON request.id = event.request_id
     LEFT JOIN bars_telegram_updates AS incoming ON incoming.sequence = event.update_sequence

@@ -33,8 +33,6 @@ export interface DeliveryReceipt {
   sent_at: Date | null;
 }
 
-export const resetAnswer = 'Диалог сброшен. Можете написать новый вопрос.';
-
 export class TelegramStore {
   constructor(private readonly pool: Pool, private readonly botId: string) {}
 

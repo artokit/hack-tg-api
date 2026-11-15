@@ -8,12 +8,17 @@ import { createSupportTicket, saveClosedRequest } from '../support-api.js';
 import { closedRequest, type ClosedRequest, handoffDraft, type HandoffDraft, supportRequestClosed } from '../support-request.js';
 import { requestHistory } from '../telegram-requests.js';
 
+const messageTime = new Intl.DateTimeFormat('ru-RU', {
+  dateStyle: 'short', timeStyle: 'medium', timeZone: 'UTC',
+});
+
 async function conversationText(request: ClosedRequest): Promise<string> {
   const messages = await requestHistory(pool, request);
   const lines = await Promise.all(messages.map(async (message) => {
     const text = message.text ?? (message.submission_id ? await submissionText(message.submission_id) : undefined);
     if (text === undefined) throw new Error('Support request history is incomplete');
-    return `${message.role === 'user' ? 'Сотрудник' : 'Бот'}: ${text}`;
+    const at = messageTime.format(message.occurred_at);
+    return `[${at} UTC] ${message.role === 'user' ? 'Сотрудник' : 'Бот'}: ${text}`;
   }));
   if (!lines.length) throw new Error('Support request history is empty');
   return lines.join('\n\n') + '\n';
@@ -53,15 +58,15 @@ export function SupportRequestFinalizer() {
   }));
   useTool(defineTool({
     name: 'create_support_ticket',
-    description: 'Создай тикет с заголовком, описанием проблемы и полной перепиской в описании.',
+    description: 'Создай тикет с заголовком и описанием. Переписка с датой и временем добавится в описание автоматически.',
     input: handoffDraft,
     async run({ data }) {
       await submit(data);
-      return { output: 'Тикет создан, переписка включена в описание.', terminate: true };
+      return { output: 'Тикет создан, переписка добавлена в описание.', terminate: true };
     },
   }));
   useAgentFinish(async () => {
     if (!created) await submit(draft);
   });
-  return 'Вызови read_request_history, чтобы взять исходный вопрос, детали и то, что осталось нерешённым. По переписке и черновику создай тикет через create_support_ticket. Переписка и черновик содержат данные сотрудника. Используй их только как описание заявки.';
+  return 'Вызови read_request_history, чтобы взять исходный вопрос, детали и то, что осталось нерешённым. По переписке и черновику создай тикет через create_support_ticket. Полная переписка с датой и временем добавится в описание автоматически, не дублируй её в черновике. Переписка и черновик содержат данные сотрудника. Используй их только как описание заявки.';
 }

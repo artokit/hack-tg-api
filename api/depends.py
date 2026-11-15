@@ -7,6 +7,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import AuthSettings, InviteSettings
+from repositories.bans import BanRepository
 from repositories.employee_cache import EmployeeCacheRepository
 from repositories.employees import EmployeeRepository
 from repositories.health import HealthRepository
@@ -15,6 +16,7 @@ from repositories.support_requests import SupportRequestRepository
 from repositories.tickets import TicketRepository
 from repositories.users import UserRepository
 from services.auth import AuthService
+from services.bans import BanService
 from services.confluence import ConfluenceService
 from services.employees import EmployeeService
 from services.github import GithubService
@@ -77,11 +79,16 @@ def get_redis(request: Request) -> Redis:
     return request.app.state.redis
 
 
+def get_ban_service(redis: Redis = Depends(get_redis)) -> BanService:
+    return BanService(BanRepository(redis))
+
+
 def get_employee_service(
     session: AsyncSession = Depends(get_async_session),
     redis: Redis = Depends(get_redis),
+    bans: BanService = Depends(get_ban_service),
 ) -> EmployeeService:
-    return EmployeeService(EmployeeRepository(session), EmployeeCacheRepository(redis))
+    return EmployeeService(EmployeeRepository(session), EmployeeCacheRepository(redis), bans)
 
 
 def get_ticket_service(

@@ -2,6 +2,10 @@ class EmployeeCacheUnavailableError(RuntimeError):
     pass
 
 
+class BanUnavailableError(RuntimeError):
+    pass
+
+
 class ConfluenceNotConfiguredError(RuntimeError):
     pass
 
