@@ -34,6 +34,11 @@ services:
       timeout: 3s
       retries: 10
 
+  redis-rag:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "${RAG_REDIS_MAXMEMORY:-64mb}", "--maxmemory-policy", "allkeys-lfu"]
+
   api:
     build: ./api
     restart: unless-stopped
@@ -42,9 +47,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      redis-rag:
+        condition: service_started
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/app
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RAG_REDIS_URL: ${RAG_REDIS_URL:-redis://redis-rag:6379/0}
       JIRA_BASE_URL: ${JIRA_BASE_URL:-https://barsgroup.atlassian.net}
       JIRA_EMAIL: ${JIRA_EMAIL:-}
       JIRA_API_TOKEN: ${JIRA_API_TOKEN:-}

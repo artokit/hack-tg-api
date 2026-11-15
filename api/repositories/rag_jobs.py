@@ -109,19 +109,39 @@ class RagJobs:
             await session.execute(delete(RagDocument).where(
                 RagDocument.index_key == index_key, RagDocument.source_id == source_id,
             ))
-            for job in jobs:
-                if job.status == "deleting":
-                    continue
-                self.record_cleanup(
-                    job, job.version, job.file_id,
-                    legacy=job.source_kind == "file" and not job.file_id,
-                )
-                if job.cleanup:
-                    job.status = "deleting"
-                    job.cleanup = [{**artifact, "retry_at": None} for artifact in job.cleanup]
-                else:
-                    await session.delete(job)
+            await self.schedule_source_cleanup(session, jobs)
             return True
+
+    async def delete_confluence_source(self, index_key: str, space_id: str, page_id: str) -> None:
+        source_id = f"confluence:{page_id}"
+        async with self.session(transaction=True) as session:
+            await self.lock_source(session, index_key, source_id)
+            jobs = list(await session.scalars(select(RagJob).where(
+                RagJob.index_key == index_key, RagJob.source_id == source_id,
+                RagJob.source_kind == "confluence",
+                RagJob.source_locator["space_id"].astext == space_id,
+            ).with_for_update()))
+            versions = [job.version for job in jobs if job.version]
+            if versions:
+                await session.execute(delete(RagDocument).where(
+                    RagDocument.index_key == index_key, RagDocument.source_id == source_id,
+                    RagDocument.active_version.in_(versions),
+                ))
+            await self.schedule_source_cleanup(session, jobs)
+
+    async def schedule_source_cleanup(self, session: AsyncSession, jobs: list[RagJob]) -> None:
+        for job in jobs:
+            if job.status == "deleting":
+                continue
+            self.record_cleanup(
+                job, job.version, job.file_id,
+                legacy=job.source_kind == "file" and not job.file_id,
+            )
+            if job.cleanup:
+                job.status = "deleting"
+                job.cleanup = [{**artifact, "retry_at": None} for artifact in job.cleanup]
+            else:
+                await session.delete(job)
 
     async def is_file_deleted(self, file_id: UUID) -> bool:
         async with self.session() as session:

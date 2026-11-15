@@ -12,6 +12,7 @@ const event = v.object({
   space_id: v.optional(v.unknown()),
   page_id: v.optional(pageId),
   id: v.optional(pageId),
+  type: v.optional(v.picklist(['new', 'updated', 'deleted'])),
 });
 
 const webhook: Handler = async (c) => {
@@ -35,22 +36,27 @@ const webhook: Handler = async (c) => {
   }
   const spaceId = configuredSpace || parsed.output.space_id;
   if (!v.is(id, spaceId)) return c.json({ detail: 'Invalid Confluence event' }, 400);
+  const deleted = parsed.output.type === 'deleted';
+  const path = deleted
+    ? `/internal/rag/confluence/sources/${documentId}?${new URLSearchParams({ space_id: spaceId })}`
+    : '/internal/rag/confluence/imports';
 
   try {
-    const response = await fetch(`${httpUrl('API_URL')}/internal/rag/confluence/imports`, {
-      method: 'POST',
+    const response = await fetch(`${httpUrl('API_URL')}${path}`, {
+      method: deleted ? 'DELETE' : 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Bot-Token': required('BOT_API_TOKEN') },
-      body: JSON.stringify({ space_id: spaceId, page_id: documentId }),
+      body: deleted ? undefined : JSON.stringify({ space_id: spaceId, page_id: documentId }),
       signal: AbortSignal.timeout(5000),
       redirect: 'error',
     });
     await response.body?.cancel();
-    if (response.status === 202) return c.body(null, 202);
-    console.warn('Confluence import queue rejected request', response.status);
+    if (response.status === 204 && deleted) return c.body(null, 204);
+    if (response.status === 202 && !deleted) return c.body(null, 202);
+    console.warn('Confluence RAG event rejected', response.status);
   } catch (error) {
-    console.warn('Confluence import queue unavailable', error instanceof Error ? error.name : 'Error');
+    console.warn('Confluence RAG event failed', error instanceof Error ? error.name : 'Error');
   }
-  return c.json({ detail: 'Confluence import queue unavailable' }, 503);
+  return c.json({ detail: 'Confluence document processing unavailable' }, 503);
 };
 
 export const confluenceChannel = new Hono()

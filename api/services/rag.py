@@ -4,14 +4,19 @@ from pathlib import PurePath
 from urllib.parse import unquote, urlsplit
 from uuid import UUID, uuid4
 
+from pydantic import TypeAdapter, ValidationError
+
 from models.rag import DocumentTooLarge, InvalidDocument, RagDocumentNotFound, RagQueueUnavailable, RagUnavailable
+from repositories.rag_cache import RagCache
 from repositories.rag_extract import identifiers
 from repositories.rag_files import DOCUMENT_FORMATS, MAX_DOCUMENT_BYTES, RagFiles
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
+from schemas.rag import RagCachedEvidence
 
 
 log = logging.getLogger(__name__)
+CACHED_EVIDENCE = TypeAdapter(list[RagCachedEvidence])
 REGISTRY = re.compile(
     r"\bреестр(?:а|е|у|ом|ы|ов)?\s+[«\"]?(мебели|техники)\b", re.IGNORECASE
 )
@@ -33,10 +38,11 @@ class RagOriginals:
 
 
 class RagService:
-    def __init__(self, jobs: RagJobs, index: RagIndex, files: RagFiles):
+    def __init__(self, jobs: RagJobs, index: RagIndex, files: RagFiles, cache: RagCache):
         self.jobs = jobs
         self.index = index
         self.files = files
+        self.cache = cache
 
     async def submit_file(
         self, source_id: str | None, title: str | None, filename: str, data: bytes,
@@ -77,6 +83,9 @@ class RagService:
     async def delete_document(self, job_id: UUID) -> None:
         if not await self.jobs.delete_source(job_id, self.index.key):
             raise RagDocumentNotFound
+
+    async def delete_confluence_document(self, space_id: str, page_id: str) -> None:
+        await self.jobs.delete_confluence_source(self.index.key, space_id, page_id)
 
     async def submit_url(self, source_id: str | None, title: str | None, url: str) -> tuple[UUID, str]:
         if source_id and source_id.startswith("confluence:"):
@@ -125,6 +134,27 @@ class RagService:
             raise RagUnavailable("index_unavailable") from error
         if not versions:
             return []
+        key = self.cache.key(self.index.key, versions, question, exact_id)
+        cached = await self.cache.get(key)
+        results = None
+        if cached is not None:
+            try:
+                results = CACHED_EVIDENCE.validate_json(cached)
+            except ValidationError:
+                log.debug("RAG cache entry failed validation")
+        if results is None:
+            results = CACHED_EVIDENCE.validate_python(await self.retrieve(question, exact_id, versions))
+            if results:
+                await self.cache.set(key, CACHED_EVIDENCE.dump_json(results))
+        return [
+            {
+                **block.model_dump(exclude={"file_id"}),
+                "source_url": self.files.link(block.file_id) if block.file_id else block.source_url,
+            }
+            for block in results
+        ]
+
+    async def retrieve(self, question: str, exact_id: str | None, versions: list[str]) -> list[dict]:
         if exact_id:
             chunks = await self.index.exact(exact_id, versions)
             log.info("RAG retrieval (exact, %d candidates)", len(chunks))
@@ -166,7 +196,6 @@ class RagService:
         size = 0
         for chunk in chunks:
             file_id = chunk.get("file_id")
-            source_url = self.files.link(UUID(file_id)) if file_id else chunk["source_url"]
             for block in chunk["evidence"]:
                 if (
                     block["id"] in found
@@ -178,7 +207,8 @@ class RagService:
                 if size > 23500:
                     return found
                 found[block["id"]] = {
-                    **block, "title": chunk["title"], "source_url": source_url,
+                    **block, "title": chunk["title"], "file_id": file_id,
+                    "source_url": None if file_id else chunk["source_url"],
                     "format": chunk["format"],
                 }
         return found

@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { useDataWriter, useDelivery, useModel, useResponseStart, useTool } from '@flue/runtime';
+import {
+  useAgentFinish, useAgentStart, useDataWriter, useDelivery, useModel, usePersistentState,
+  useResponseStart, useTool,
+} from '@flue/runtime';
 
 import { contextWindow, modelId } from '../provider.js';
-import { answerTool } from '../rag.js';
+import { answerFromDocs, answerTool } from '../rag.js';
+import { chatTool } from '../telegram-chat.js';
 import { transientSignal } from '../transient-harness.js';
 
 export function Bars() {
@@ -19,18 +23,30 @@ export function Bars() {
   });
   useResponseStart(() => ({ telegramResponseId: randomUUID() }));
   const writeRag = useDataWriter('ragAnswer');
+  const writeChat = useDataWriter('chatAnswer');
   if (delivery.kind === 'user') {
-    useTool(answerTool(Bars, delivery.body, writeRag));
+    const [handled, setHandled] = usePersistentState('telegramReplyHandled', false);
+    useAgentStart(() => setHandled(false));
+    useTool(answerTool(Bars, delivery.body, (result) => {
+      writeRag(result);
+      setHandled(true);
+    }));
+    useTool(chatTool((kind) => {
+      writeChat(kind);
+      setHandled(true);
+    }));
+    useAgentFinish(async ({ signal }) => {
+      if (!handled) writeRag(await answerFromDocs(Bars, delivery.body, undefined, signal));
+    });
   }
 
-  return `Ты помощник БАРС Груп. Отвечай кратко и на языке пользователя.
-Помогай с общими вопросами и учитывай контекст диалога.
-Для вопросов о внутренних правилах и документации БАРС, интерфейсе БАРС-Офиса,
-бизнес-процессах, реестрах и конкретных пунктах вызывай answer_from_docs. Повторно вызывай
-тулзу для уточнений к таким вопросам, передавая самостоятельные вопросы в questions.
-На приветствия и общие вопросы отвечай напрямую. Не отвечай по внутренним сведениям по памяти.
-Не выдумывай внутренние правила, контакты и ссылки.
-Используй Markdown для списков, ссылок и блоков кода, когда это помогает прочитать ответ.`;
+  return `Ты помощник БАРС Груп. Выбери инструмент для ответа пользователю.
+На любой вопрос о фактах вызывай answer_from_docs, даже если тема кажется общей.
+Для уточнения или составного вопроса учитывай историю диалога и передавай самостоятельные вопросы
+в questions, сохраняя точные названия и ID. Каждый новый вопрос о фактах требует нового поиска.
+Вызывай reply_in_chat для приветствий, благодарностей, прощаний и вопросов о твоих возможностях.
+Если пользователь просит выполнить постороннюю задачу, например написать пузырьковую сортировку,
+вызови reply_in_chat с kind=off_topic.`;
 }
 
 Bars.durability = { timeoutMs: 90_000 };

@@ -3,15 +3,15 @@ from functools import partial
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, Form, Header, HTTPException, Path, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
 from depends import get_current_user, get_rag_originals, get_rag_service, require_bot_token
 from models.rag import DocumentTooLarge, InvalidDocument, RagDocumentNotFound, RagUnavailable
 from repositories.rag_files import MAX_DOCUMENT_BYTES
 from schemas.rag import (
-    SOURCE_ID_PATTERN, RagConfluenceImportCreate, RagEvidenceRead, RagJobCreated, RagJobPage, RagJobRead,
-    RagSearchRequest, RagUrlRequest,
+    CONFLUENCE_ID_PATTERN, SOURCE_ID_PATTERN, RagConfluenceImportCreate, RagEvidenceRead, RagJobCreated,
+    RagJobPage, RagJobRead, RagSearchRequest, RagUrlRequest,
 )
 from services.rag import RagOriginals, RagService, UnexpectedDocumentId
 
@@ -84,6 +84,20 @@ async def import_confluence_page(source: RagConfluenceImportCreate, service: Ser
     except RagUnavailable as error:
         raise HTTPException(status_code=503, detail="Document import temporarily unavailable") from error
     return RagJobCreated(job_id=job_id, source_id=source_id)
+
+
+@router.delete(
+    "/internal/rag/confluence/sources/{page_id}", status_code=204, dependencies=[Depends(require_bot_token)],
+)
+async def delete_confluence_page(
+    page_id: Annotated[str, Path(pattern=CONFLUENCE_ID_PATTERN)],
+    space_id: Annotated[str, Query(pattern=CONFLUENCE_ID_PATTERN)],
+    service: Service,
+):
+    try:
+        await service.delete_confluence_document(space_id, page_id)
+    except RagUnavailable as error:
+        raise HTTPException(status_code=503, detail="Document deletion temporarily unavailable") from error
 
 
 @router.get("/file-service/{file_id}")

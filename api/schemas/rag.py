@@ -8,6 +8,7 @@ from models.rag import BlockKind
 
 
 SOURCE_ID_PATTERN = r"^[a-zA-Z0-9_./:\-]+$"
+CONFLUENCE_ID_PATTERN = r"^[1-9][0-9]{0,18}$"
 
 
 class RagJobCreated(BaseModel):
@@ -27,8 +28,8 @@ class RagUrlRequest(BaseModel):
 class RagConfluenceImportCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    space_id: str = Field(pattern=r"^[1-9][0-9]{0,18}$")
-    page_id: str = Field(pattern=r"^[1-9][0-9]{0,18}$")
+    space_id: str = Field(pattern=CONFLUENCE_ID_PATTERN)
+    page_id: str = Field(pattern=CONFLUENCE_ID_PATTERN)
 
 
 class RagJobRead(BaseModel):
@@ -78,3 +79,7 @@ class RagEvidenceRead(BaseModel):
     text: str
     label: str = ""
     columns: list[str] = Field(default_factory=list)
+
+
+class RagCachedEvidence(RagEvidenceRead):
+    file_id: UUID | None
