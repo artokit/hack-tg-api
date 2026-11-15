@@ -21,7 +21,6 @@ class WorkloadTokensRead(BaseModel):
 
 class TechnicalTokensRead(BaseModel):
     chat: WorkloadTokensRead
-    document_import: WorkloadTokensRead
 
 
 class ResponseTimeRead(BaseModel):
@@ -59,12 +58,12 @@ class TechnicalDeliveryRead(BaseModel):
     service: DeliveryOutcomesRead
 
 
-class TechnicalAnalyticsRead(BaseModel):
+class RequestAnalyticsRead(BaseModel):
     model_config = ConfigDict(json_schema_extra={"examples": [{
         "range": "24h",
         "from_at": "2026-11-14T10:00:00Z",
         "to_at": "2026-11-15T10:00:00Z",
-        "tokens": {kind: {"input": 0, "output": 0, "by_model": []} for kind in ("chat", "document_import")},
+        "tokens": {"chat": {"input": 0, "output": 0, "by_model": []}},
         "response_time": {"sample_count": 0, "mean_ms": None, "p95_ms": None},
         "stages": [{"stage": stage, "mean_ms": None} for stage in ("queue", "preparation", "delivery")],
         "response_breakdown": {"sample_count": 0, "mean_ms": None, "stages": [

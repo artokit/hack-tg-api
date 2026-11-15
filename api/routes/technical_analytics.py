@@ -3,7 +3,7 @@ from pydantic import AwareDatetime
 
 from depends import get_current_user, get_support_request_service, get_technical_analytics_service
 from schemas.support_requests import RequestCostRead
-from schemas.technical_analytics import TechnicalAnalyticsRead, TechnicalRange
+from schemas.technical_analytics import RequestAnalyticsRead, TechnicalRange
 from services.support_requests import SupportRequestService
 from services.technical_analytics import TechnicalAnalyticsService, TechnicalAnalyticsUnavailable
 
@@ -11,11 +11,11 @@ from services.technical_analytics import TechnicalAnalyticsService, TechnicalAna
 router = APIRouter(prefix="/analytics", tags=["analytics"], dependencies=[Depends(get_current_user)])
 
 
-@router.get("/technical", response_model=TechnicalAnalyticsRead, responses={503: {"description": "Metrics unavailable"}})
-async def read_technical_analytics(
+@router.get("/requests", response_model=RequestAnalyticsRead, responses={503: {"description": "Metrics unavailable"}})
+async def read_request_analytics(
     range: TechnicalRange = "24h",
     service: TechnicalAnalyticsService = Depends(get_technical_analytics_service),
-) -> TechnicalAnalyticsRead:
+) -> RequestAnalyticsRead:
     try:
         return await service.read(range)
     except TechnicalAnalyticsUnavailable as error:

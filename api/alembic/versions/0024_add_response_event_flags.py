@@ -3,8 +3,8 @@ from typing import Sequence, Union
 from alembic import op
 
 
-revision: str = "0023"
-down_revision: Union[str, None] = "0022"
+revision: str = "0024"
+down_revision: Union[str, None] = "0023"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

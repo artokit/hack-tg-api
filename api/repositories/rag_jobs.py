@@ -7,7 +7,7 @@ from sqlalchemy.dialects.postgresql import distinct_on, insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from db.models import RagDocument, RagJob, RagVisualFile
+from db.models import RagDocument, RagImportEvent, RagJob, RagVisualFile
 from models.rag import RETIRED_VERSION_GRACE, InvalidDocument, RagDocumentNotFound, RagImport, RagQueueUnavailable
 
 
@@ -31,12 +31,14 @@ class RagJobs:
     ) -> None:
         async with self.session(transaction=True) as session:
             await self.lock_source(session, index_key, source_id)
-            session.add(RagJob(
+            job = RagJob(
                 id=job_id,
                 index_key=index_key, source_id=source_id, title=title or "", source_url=source_url,
                 format=format, file_id=file_id, size_bytes=size_bytes,
                 source_kind=source_kind,
-            ))
+            )
+            self.track_import(job)
+            session.add(job)
 
     async def enqueue_confluence(self, index_key: str, source_id: str, space_id: str, page_id: str) -> UUID:
         async with self.session(transaction=True) as session:
@@ -51,6 +53,7 @@ class RagJobs:
                     id=uuid4(), index_key=index_key, source_id=source_id, title="", format="html",
                     source_kind="confluence", source_locator=locator,
                 )
+                self.track_import(job)
                 session.add(job)
             else:
                 current_locator = job.source_locator or {}
@@ -61,8 +64,18 @@ class RagJobs:
                     locator["refresh_visuals"] = "true"
                 if job.status != "queued":
                     self.requeue(job)
+                    self.track_import(job)
+                elif job.import_event_id is None and locator.get("refresh_visuals") == "true":
+                    self.track_import(job)
                 job.source_locator = locator
             return job.id
+
+    @staticmethod
+    def track_import(job: RagJob) -> None:
+        job.import_event = RagImportEvent(
+            format=job.format if job.source_kind != "url" else None,
+            size_bytes=job.size_bytes if job.source_kind != "confluence" else None,
+        )
 
     @staticmethod
     async def lock_source(session: AsyncSession, index_key: str, source_id: str) -> None:
@@ -156,6 +169,7 @@ class RagJobs:
         job.version = None
         job.chunk_count = None
         job.purged_at = None
+        job.import_event = None
         job.created_at = func.clock_timestamp()
         job.updated_at = func.now()
 
@@ -192,6 +206,7 @@ class RagJobs:
             job.source_kind = "file"
             job.source_locator = None
             job.source_revision = None
+            self.track_import(job)
             return True
 
     async def delete_source(self, job_id: UUID, index_key: str) -> bool:
@@ -377,9 +392,15 @@ class RagJobs:
             job.status = "running"
             job.version = job.version or version
             job.updated_at = func.now()
+            if job.import_event_id is not None:
+                await session.execute(
+                    update(RagImportEvent).where(RagImportEvent.id == job.import_event_id)
+                    .values(started_at=func.clock_timestamp(), excluded=False)
+                )
             return RagImport(
                 job.id, job.source_id, job.title, job.source_url, job.format, job.version, resumed, job.source_kind,
                 file_id=job.file_id, source_locator=job.source_locator, source_revision=job.source_revision,
+                import_event_id=job.import_event_id,
             )
 
     async def restore_confluence(self, job: RagImport, index_key: str, page_version: int, size_bytes: int) -> bool:
@@ -390,9 +411,15 @@ class RagJobs:
                 return False
             active_version = int(document.source_revision)
             refresh = (job.source_locator or {}).get("refresh_visuals") == "true"
-            if page_version > active_version or (page_version == active_version and refresh):
+            if page_version > active_version:
                 return False
             current = await session.get(RagJob, job.id, with_for_update=True)
+            if job.import_event_id is not None:
+                await session.execute(
+                    update(RagImportEvent).where(RagImportEvent.id == job.import_event_id).values(excluded=True)
+                )
+            if page_version == active_version and refresh:
+                return False
             if current is not None and current.status == "running" and current.version == job.version:
                 self.restore_published(current, document)
                 if document.source_revision == str(page_version):
@@ -408,9 +435,10 @@ class RagJobs:
                 self.finish(job).values(
                     status="succeeded", chunk_count=count, title=job.title, format=job.format, size_bytes=size_bytes,
                     source_url=job.source_url, source_revision=job.source_revision,
-                ).returning(RagJob.id)
+                ).returning(RagJob.import_event_id)
             )
-            if result.scalar_one_or_none() is None:
+            finished = result.one_or_none()
+            if finished is None:
                 return False
             previous = await session.scalar(
                 select(RagDocument.active_version).where(
@@ -440,6 +468,19 @@ class RagJobs:
                     set_=published,
                 )
             )
+            if finished.import_event_id is not None:
+                await session.execute(
+                    update(RagImportEvent).where(
+                        RagImportEvent.id == finished.import_event_id,
+                        RagImportEvent.started_at.is_not(None),
+                        RagImportEvent.excluded.is_(False),
+                    ).values(
+                        format=job.format, size_bytes=size_bytes,
+                        processing_ms=func.greatest(
+                            0, func.extract("epoch", func.clock_timestamp() - RagImportEvent.started_at) * 1000,
+                        ),
+                    )
+                )
             return True
 
     async def retired(self, index_key: str, active_sources: list[str]) -> list[tuple[UUID, str]]:
@@ -464,9 +505,16 @@ class RagJobs:
                 RagJob.id == job_id, RagJob.version == version,
             ).values(purged_at=func.now()))
 
-    async def fail(self, job: RagImport, error_code: str) -> None:
+    async def fail(self, job: RagImport, error_code: str, size_bytes: int | None = None) -> None:
         async with self.session(transaction=True) as session:
-            await session.execute(self.finish(job).values(status="failed", error_code=error_code))
+            event_id = await session.scalar(
+                self.finish(job).values(status="failed", error_code=error_code).returning(RagJob.import_event_id)
+            )
+            if event_id is not None and size_bytes is not None:
+                await session.execute(
+                    update(RagImportEvent).where(RagImportEvent.id == event_id)
+                    .values(format=job.format, size_bytes=size_bytes)
+                )
 
     def finish(self, job: RagImport):
         return (
