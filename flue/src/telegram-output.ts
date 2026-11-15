@@ -7,6 +7,7 @@ import type { DeliveryKind, DeliveryReceipt, DeliveryStatus, TelegramStore } fro
 
 export type DeliveryResult = DeliveryReceipt & { startedAt?: number; finishedAt?: number };
 type ReplyPhoto = { id: string; media: { type: 'photo'; media: InputFile } };
+const emptyKeyboard = { inline_keyboard: [] };
 
 export function splitReply(text: string): string[] {
   const parts: string[] = [];
@@ -30,6 +31,16 @@ async function withRateLimit<T>(send: () => Promise<T>): Promise<T> {
     if (seconds === undefined) throw error;
     await delay(seconds * 1000);
     return await send();
+  }
+}
+
+async function editWithRetry<T>(edit: () => Promise<T>): Promise<T> {
+  try {
+    return await withRateLimit(edit);
+  } catch (error) {
+    if (!(error instanceof HttpError || (error instanceof GrammyError && error.error_code >= 500))) throw error;
+    await delay(250);
+    return withRateLimit(edit);
   }
 }
 
@@ -91,69 +102,73 @@ export class TelegramOutput {
     if (!await this.store.claimDelivery(id, kind)) return this.store.delivery(id);
     const startedAt = Date.now();
     let status: DeliveryStatus = 'sent';
+    let messageId: number | null = null;
     try {
-      if (replaceMessageId === undefined || !await this.replaceMessage(chatId, replaceMessageId, text, keyboard)) {
-        await this.sendMessage(chatId, text, markdown, html, media, keyboard);
-      }
+      messageId = replaceMessageId !== undefined && await this.replaceMessage(chatId, replaceMessageId, text, keyboard)
+        ? replaceMessageId : await this.sendMessage(chatId, text, markdown, html, media, keyboard);
     } catch (error) {
       status = error instanceof GrammyError && error.error_code < 500 ? 'failed' : 'unknown';
       console.warn('Telegram delivery', status, id, error instanceof Error ? error.name : 'Error');
     }
     const finishedAt = Date.now();
-    const receipt = await this.store.recordDelivery(id, status);
+    const receipt = await this.store.recordDelivery(id, status, keyboard ? messageId : null);
     recordDelivery(kind, status);
     return { ...receipt, startedAt, finishedAt };
   }
 
-  private async replaceMessage(chatId: string, messageId: number, text: string, keyboard?: InlineKeyboard): Promise<boolean> {
-    const emptyKeyboard = { inline_keyboard: [] };
-    const edit = () => withRateLimit(() => this.client.editMessageText(
-      chatId, messageId, text, { reply_markup: keyboard ?? emptyKeyboard },
-    ));
+  async removeKeyboard(chatId: string, messageId: number): Promise<void> {
     try {
-      await edit().catch(async (error: unknown) => {
-        if (!(error instanceof HttpError || (error instanceof GrammyError && error.error_code >= 500))) throw error;
-        await delay(250);
-        await edit();
-      });
+      await editWithRetry(() => this.client.editMessageReplyMarkup(chatId, messageId, { reply_markup: emptyKeyboard }));
+    } catch (error) {
+      if (!(error instanceof GrammyError) || ![400, 403].includes(error.error_code)) throw error;
+      if (!error.description.includes('message is not modified')) {
+        console.warn('Telegram keyboard removal rejected', messageId, error.error_code);
+      }
+    }
+  }
+
+  private async replaceMessage(chatId: string, messageId: number, text: string, keyboard?: InlineKeyboard): Promise<boolean> {
+    try {
+      await editWithRetry(() => this.client.editMessageText(
+        chatId, messageId, text, { reply_markup: keyboard ?? emptyKeyboard },
+      ));
       return true;
     } catch (error) {
       if (!(error instanceof GrammyError) || ![400, 403].includes(error.error_code)) throw error;
       if (error.error_code === 400 && error.description.includes('message is not modified')) return true;
     }
-    try {
-      await withRateLimit(() => this.client.editMessageReplyMarkup(chatId, messageId, { reply_markup: emptyKeyboard }));
-    } catch (error) {
-      console.warn('Telegram keyboard removal failed', messageId, error instanceof Error ? error.name : 'Error');
-    }
+    await this.removeKeyboard(chatId, messageId);
     return false;
   }
 
   private async sendMessage(
     chatId: string, text: string, markdown: boolean, html: string | undefined, media: ReplyPhoto[],
     keyboard?: InlineKeyboard,
-  ): Promise<void> {
+  ): Promise<number | null> {
     const options = keyboard && { reply_markup: keyboard };
     if (html && media.length) {
       const photos = media.map(({ id }) => `<img src="tg://photo?id=${id}"/>`).join('');
       try {
-        await withRateLimit(() => this.client.sendRichMessage(chatId, { html: html + photos, media }, options));
-        return;
+        const sent = await withRateLimit(() => this.client.sendRichMessage(chatId, { html: html + photos, media }, options));
+        return sent.message_id;
       } catch (error) {
         if (!(error instanceof GrammyError) || ![400, 413].includes(error.error_code)) throw error;
       }
     }
     if (html || markdown) {
       try {
-        await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }, options));
-        return;
+        const sent = await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }, options));
+        return sent.message_id;
       } catch (error) {
         if (!(error instanceof GrammyError) || error.error_code !== 400) throw error;
       }
     }
     const parts = splitReply(text);
+    let messageId: number | null = null;
     for (const [index, part] of parts.entries()) {
-      await withRateLimit(() => this.client.sendMessage(chatId, part, index === parts.length - 1 ? options : undefined));
+      const sent = await withRateLimit(() => this.client.sendMessage(chatId, part, index === parts.length - 1 ? options : undefined));
+      messageId = sent.message_id;
     }
+    return messageId;
   }
 }

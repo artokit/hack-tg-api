@@ -20,7 +20,7 @@ type ChatReply = v.InferOutput<typeof chatReply>;
 export function chatTool(write: (reply: ChatReply) => void) {
   return defineTool({
     name: 'reply_in_chat',
-    description: 'Коротко ответь своими словами с учётом диалога на приветствие (в том числе повторное), благодарность, прощание, проверку связи или вопрос о своих возможностях. Для вопроса по работе используй поиск по документации.',
+    description: 'Коротко ответь своими словами с учётом диалога, если реплика не требует поиска по документации или действия с обращением.',
     input: v.object({ text: chatText }),
     run({ data }) {
       write({ kind: 'reply', text: data.text });

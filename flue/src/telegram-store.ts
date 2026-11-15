@@ -37,6 +37,7 @@ export type DeliveryStatus = 'sent' | 'failed' | 'unknown';
 export interface DeliveryReceipt {
   status: 'sending' | DeliveryStatus;
   sent_at: Date | null;
+  message_id: number | null;
 }
 
 export class TelegramStore {
@@ -232,17 +233,17 @@ export class TelegramStore {
 
   async delivery(id: string): Promise<DeliveryReceipt> {
     const result = await this.pool.query<DeliveryReceipt>(`
-      SELECT status, sent_at FROM bars_telegram_deliveries WHERE bot_id = $1 AND delivery_id = $2
+      SELECT status, sent_at, message_id FROM bars_telegram_deliveries WHERE bot_id = $1 AND delivery_id = $2
     `, [this.botId, id]);
     return result.rows[0];
   }
 
-  async recordDelivery(id: string, status: DeliveryStatus): Promise<DeliveryReceipt> {
+  async recordDelivery(id: string, status: DeliveryStatus, messageId: number | null): Promise<DeliveryReceipt> {
     const result = await this.pool.query<DeliveryReceipt>(`
-      UPDATE bars_telegram_deliveries SET status = $3,
+      UPDATE bars_telegram_deliveries SET status = $3, message_id = $4,
         sent_at = CASE WHEN $3 = 'sent' THEN clock_timestamp() END
-      WHERE bot_id = $1 AND delivery_id = $2 RETURNING status, sent_at
-    `, [this.botId, id, status]);
+      WHERE bot_id = $1 AND delivery_id = $2 RETURNING status, sent_at, message_id
+    `, [this.botId, id, status, messageId]);
     return result.rows[0];
   }
 }
