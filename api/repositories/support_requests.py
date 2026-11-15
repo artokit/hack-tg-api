@@ -19,8 +19,8 @@ class SupportRequestRepository:
         self, from_at: datetime | None, to_at: datetime | None,
     ) -> tuple[int, int, Decimal | None]:
         query = select(
-            func.count(SupportRequest.id), func.count(SupportRequest.model_cost_usd),
-            func.sum(SupportRequest.model_cost_usd),
+            func.count(SupportRequest.id), func.count(SupportRequest.model_cost_rub),
+            func.sum(SupportRequest.model_cost_rub),
         )
         if from_at is not None:
             query = query.where(SupportRequest.closed_at >= from_at)

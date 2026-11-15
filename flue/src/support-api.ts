@@ -14,10 +14,10 @@ async function createIfMissing(readPath: string, createPath: string, body: objec
   throw new Error(`Support API status ${created.status}`);
 }
 
-export function saveClosedRequest(event: ClosedRequest, cost: number | null): Promise<void> {
+export function saveClosedRequest(event: ClosedRequest, cost: string | null): Promise<void> {
   const { request_id, handoff: _handoff, ...outcome } = event;
   return createIfMissing(`support-requests/${request_id}`, 'support-requests', {
-    id: request_id, ...outcome, model_cost_usd: cost,
+    id: request_id, ...outcome, model_cost_rub: cost,
   });
 }
 

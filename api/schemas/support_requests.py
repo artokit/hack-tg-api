@@ -20,7 +20,7 @@ class SupportRequestCreate(BaseModel):
     closed_at: AwareDatetime
     is_resolved: bool | None
     close_reason: CloseReason
-    model_cost_usd: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=9)
+    model_cost_rub: Decimal | None = Field(default=None, ge=0, max_digits=18, decimal_places=9)
 
     @model_validator(mode="after")
     def validate_outcome(self) -> "SupportRequestCreate":
@@ -38,7 +38,7 @@ class SupportRequestRead(SupportRequestCreate):
 
 
 class RequestCostRead(BaseModel):
-    currency: Literal["USD"] = "USD"
+    currency: Literal["RUB"] = "RUB"
     closed_count: int
     priced_count: int
     total: float | None

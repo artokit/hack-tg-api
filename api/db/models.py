@@ -60,7 +60,7 @@ class SupportRequest(Base):
     closed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     is_resolved: Mapped[bool | None] = mapped_column(Boolean)
     close_reason: Mapped[str] = mapped_column(String(40))
-    model_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(18, 9))
+    model_cost_rub: Mapped[Decimal | None] = mapped_column(Numeric(18, 9))
 
 
 class Ticket(Base):

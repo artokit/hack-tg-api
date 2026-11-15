@@ -4,7 +4,9 @@ import { pool } from './db.js';
 
 const pending = new Map<string, Set<Promise<void>>>();
 const incomplete = new Set<string>();
-const nanoUsdPerUsd = 1_000_000_000;
+const nanosPerUnit = 1_000_000_000n;
+const usdRubRate = 821_516n;
+const usdRubRateScale = 10_000n;
 const lunaShort = { input: 100, cacheRead: 10, cacheWrite: 125, output: 500 };
 const lunaLong = { input: 200, cacheRead: 20, cacheWrite: 250, output: 750 };
 
@@ -43,7 +45,7 @@ export function recordRequestModelUsage(
   requestWrites.add(write);
 }
 
-export async function closedRequestCost(requestId: string, instanceId: string): Promise<number | null> {
+export async function closedRequestCost(requestId: string, instanceId: string): Promise<string | null> {
   await Promise.all(pending.get(instanceId) ?? []);
   if (incomplete.has(instanceId)) {
     await pool.query('UPDATE bars_telegram_requests SET tracks_model_cost = false WHERE id = $1', [requestId]);
@@ -57,5 +59,7 @@ export async function closedRequestCost(requestId: string, instanceId: string): 
     WHERE request.id = $1 AND request.tracks_model_cost AND turn.occurred_at <= request.closed_at
   `, [requestId]);
   const cost = result.rows[0]?.cost;
-  return cost == null ? null : Number(cost) / nanoUsdPerUsd;
+  if (cost == null) return null;
+  const nanoRub = (BigInt(cost) * usdRubRate + usdRubRateScale / 2n) / usdRubRateScale;
+  return `${nanoRub / nanosPerUnit}.${(nanoRub % nanosPerUnit).toString().padStart(9, '0')}`;
 }
