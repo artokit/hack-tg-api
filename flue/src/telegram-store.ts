@@ -72,7 +72,9 @@ export class TelegramStore {
   async evaluateSpam(update: PendingUpdate, reported = false): Promise<boolean> {
     const result = await this.pool.query(`
       WITH target AS (
-        SELECT incoming.sequence, incoming.received_at, incoming.spam_fingerprint, incoming.spam_reported OR $4 AS reported
+        SELECT incoming.sequence, incoming.received_at, split_part(incoming.spam_fingerprint, ':', 1) AS exact_key,
+          nullif(split_part(incoming.spam_fingerprint, ':', 2), '') AS repeated_letter_key,
+          incoming.spam_reported OR $4 AS reported
         FROM bars_telegram_updates AS incoming
         WHERE incoming.bot_id = $1 AND incoming.chat_id = $2 AND incoming.sequence = $3
           AND incoming.spam_fingerprint IS NOT NULL
@@ -82,7 +84,8 @@ export class TelegramStore {
             WHERE session.bot_id = $1 AND session.chat_id = $2 AND session.spam_blocked_until > incoming.received_at
           )
       ), recent AS (
-        SELECT incoming.received_at, incoming.spam_fingerprint,
+        SELECT incoming.received_at, split_part(incoming.spam_fingerprint, ':', 1) AS exact_key,
+          nullif(split_part(incoming.spam_fingerprint, ':', 2), '') AS repeated_letter_key,
           incoming.spam_reported OR (incoming.sequence = target.sequence AND $4) AS reported
         FROM bars_telegram_updates AS incoming CROSS JOIN target
         WHERE incoming.bot_id = $1 AND incoming.chat_id = $2 AND incoming.spam_fingerprint IS NOT NULL
@@ -95,13 +98,21 @@ export class TelegramStore {
           count(*) FILTER (WHERE reported) OVER window_10s AS reports
         FROM recent
         WINDOW window_10s AS (ORDER BY received_at RANGE BETWEEN interval '10 seconds' PRECEDING AND CURRENT ROW)
+      ), repeated_letters AS (
+        SELECT recent.received_at, count(*) OVER window_15s AS messages,
+          bool_or(recent.reported) OVER window_15s AS reported
+        FROM recent CROSS JOIN target WHERE recent.repeated_letter_key = target.repeated_letter_key
+        WINDOW window_15s AS (ORDER BY recent.received_at RANGE BETWEEN interval '15 seconds' PRECEDING AND CURRENT ROW)
       ), decision AS (
         SELECT sequence, reported, EXISTS (
-          SELECT 1 FROM recent WHERE spam_fingerprint = target.spam_fingerprint
+          SELECT 1 FROM recent WHERE exact_key = target.exact_key
           HAVING count(*) >= 5 AND count(*) FILTER (WHERE reported) >= 2
         ) OR EXISTS (
           SELECT 1 FROM burst WHERE messages >= 30 AND reports >= 2
             AND received_at BETWEEN target.received_at AND target.received_at + interval '10 seconds'
+        ) OR EXISTS (
+          SELECT 1 FROM repeated_letters WHERE messages >= 8 AND reported
+            AND received_at BETWEEN target.received_at AND target.received_at + interval '15 seconds'
         ) AS should_ban FROM target
       )
       UPDATE bars_telegram_updates AS incoming SET spam_reported = decision.reported,
