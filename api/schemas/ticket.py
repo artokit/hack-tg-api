@@ -26,6 +26,7 @@ class TicketRead(BaseModel):
     status: str
     external_id: str | None
     external_key: str | None
+    external_url: str | None
 
 
 class TicketRecipientRead(BaseModel):

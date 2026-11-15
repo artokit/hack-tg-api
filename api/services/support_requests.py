@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -9,6 +10,11 @@ from repositories.support_requests import SupportRequestRepository
 from repositories.tickets import TicketRepository
 from schemas.support_requests import RequestCostRead, SupportRequestCreate
 from schemas.ticket import TicketCreate
+from tickets.jsm import TicketSystemError
+from tickets.registry import build_adapter
+
+
+log = logging.getLogger(__name__)
 
 
 class SupportRequestConflict(Exception):
@@ -48,6 +54,14 @@ class SupportRequestService:
         ticket = await self._tickets.by_support_request(request_id)
         if ticket is None:
             raise SupportRequestNotFound
+        if ticket.status == "created" and ticket.external_id and ticket.external_url is None:
+            adapter = build_adapter(TICKET_ROUTES.get(ticket.category) or TICKET_ROUTES["default"])
+            try:
+                ticket.external_url = await adapter.get_ticket_url(ticket.external_id)
+            except TicketSystemError:
+                log.warning("Could not retrieve Jira URL for support request %s", request_id)
+            else:
+                await self._tickets.save()
         return ticket
 
     async def create_ticket(self, request_id: UUID, data: TicketCreate) -> Ticket:

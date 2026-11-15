@@ -52,6 +52,7 @@ class TicketService:
             status="created",
             external_id=created.external_id,
             external_key=created.external_key,
+            external_url=created.external_url,
         )
         return await self._repository.create(ticket)
 
@@ -94,6 +95,7 @@ class TicketService:
         if created is not None:
             ticket.external_key = created.external_key
             ticket.external_id = created.external_id
+            ticket.external_url = created.external_url
             ticket.status = "created"
             ticket.next_attempt_at = None
         await self._repository.save()

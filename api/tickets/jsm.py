@@ -17,6 +17,20 @@ class TicketCreationUncertain(TicketSystemError):
     pass
 
 
+def _web_url(body: dict) -> str | None:
+    links = body.get("_links")
+    value = links.get("web") if isinstance(links, dict) else None
+    if not isinstance(value, str):
+        return None
+    try:
+        url = httpx.URL(value)
+    except httpx.InvalidURL:
+        return None
+    if url.scheme in {"http", "https"} and url.host and not (url.username or url.password):
+        return str(url)
+    return None
+
+
 def _ensure_success(resp: httpx.Response) -> None:
     """Превращает любую HTTP-ошибку (включая сетевые) в доменную TicketSystemError."""
     if resp.is_success:
@@ -84,7 +98,25 @@ class JsmAdapter(TicketSystem):
             raise TicketCreationUncertain("Jira не подтвердила создание заявки") from error
         except (KeyError, TypeError, ValueError) as error:
             raise TicketCreationUncertain("Jira вернула некорректный ответ") from error
-        return TicketCreated(external_id=external_id, external_key=external_key)
+        external_url = _web_url(body)
+        if external_url is None:
+            try:
+                external_url = await self.get_ticket_url(external_id)
+            except TicketSystemError:
+                pass
+        return TicketCreated(external_id=external_id, external_key=external_key, external_url=external_url)
+
+    async def get_ticket_url(self, external_id: str) -> str:
+        try:
+            response = await self._http.get(f"/rest/servicedeskapi/request/{external_id}", timeout=3)
+            _ensure_success(response)
+            body = response.json()
+        except (httpx.RequestError, ValueError) as error:
+            raise TicketSystemError("Не удалось получить ссылку на заявку Jira") from error
+        url = _web_url(body) if isinstance(body, dict) else None
+        if url is None:
+            raise TicketSystemError("Jira не вернула ссылку на заявку")
+        return url
 
     async def find_by_reference(self, reference: str) -> TicketCreated | None:
         if not re.fullmatch(r"BARSREQ[0-9a-f]{32}", reference):

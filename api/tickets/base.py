@@ -15,6 +15,7 @@ class TicketRequest(BaseModel):
 class TicketCreated:
     external_id: str
     external_key: str
+    external_url: str | None = None
 
 
 class TicketSystem(ABC):
@@ -26,4 +27,8 @@ class TicketSystem(ABC):
 
     @abstractmethod
     async def find_by_reference(self, reference: str) -> TicketCreated | None:
+        ...
+
+    @abstractmethod
+    async def get_ticket_url(self, external_id: str) -> str:
         ...

@@ -51,3 +51,4 @@ class SupportTicketRead(BaseModel):
     id: int
     status: str
     external_key: str | None
+    external_url: str | None
