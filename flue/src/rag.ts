@@ -121,7 +121,7 @@ function cite(block: Evidence, proposed: string | null | undefined): RagSource |
   };
 }
 
-export async function answerFromDocs(
+async function answerFromDocs(
   agent: Agent, question: string, questions?: string[], signal?: AbortSignal,
 ): Promise<RagDelivery> {
   let result: RagDelivery;
@@ -209,7 +209,7 @@ export function answerTool(agent: Agent, question: string, write: (data: RagDeli
   return defineTool({
     name: 'answer_from_docs',
     timeoutMs: 55_000,
-    description: 'Ответь по базе документации БАРС. Для составного вопроса передай независимые вопросы в questions, сохрани точные ID и названия. Для уточнения передай вопрос с учётом контекста.',
+    description: 'Ответь на вопрос по документации БАРС. Для просьб написать код или решить задачу по программированию используй reply_in_chat. Для составного вопроса передай независимые вопросы в questions, сохрани точные ID и названия. Для уточнения передай вопрос с учётом контекста.',
     input: v.object({
       questions: v.optional(v.pipe(v.array(questionPart), v.minLength(1), v.maxLength(6))),
     }),
