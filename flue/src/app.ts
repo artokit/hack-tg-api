@@ -3,6 +3,7 @@ import { Api } from 'grammy';
 import { Hono } from 'hono';
 
 import { confluenceChannel } from './channels/confluence.js';
+import { githubChannel } from './channels/github.js';
 import { createJiraChannel } from './channels/jira.js';
 import { httpUrl, required, webhookSecret } from './config.js';
 import { pool } from './db.js';
@@ -59,6 +60,7 @@ app.get('/health', async (c) => {
 });
 app.route('/channels/telegram', channel.route());
 app.route('/channels/confluence', confluenceChannel);
+app.route('/channels/github', githubChannel);
 app.route('/channels/jira', createJiraChannel(jiraStore));
 app.route('/internal/rag', ragModel);
 
