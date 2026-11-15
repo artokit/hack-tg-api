@@ -1,3 +1,5 @@
+import re
+
 import httpx
 
 from tickets.base import TicketAttachment, TicketCreated, TicketRequest, TicketSystem
@@ -9,6 +11,14 @@ class TicketSystemError(Exception):
     def __init__(self, message: str, status_code: int = 502):
         super().__init__(message)
         self.status_code = status_code
+
+
+class TicketCreationDeferred(TicketSystemError):
+    pass
+
+
+class TicketCreationUncertain(TicketSystemError):
+    pass
 
 
 def _ensure_success(resp: httpx.Response) -> None:
@@ -60,9 +70,10 @@ class JsmAdapter(TicketSystem):
                 "/rest/servicedeskapi/request",
                 json=payload,
             )
-            if resp.status_code in (400, 403):
-                # 400: не хватает обязательных полей типа заявки; 403: юзер не customer этого Service Desk
-                raise TicketSystemError(f"JSM rejected request: {resp.json()}")
+            if resp.status_code == 429:
+                raise TicketCreationDeferred("JSM rate limit exceeded")
+            if resp.status_code >= 500 or resp.status_code == 408:
+                raise TicketCreationUncertain(f"JSM did not confirm ticket creation ({resp.status_code})")
             _ensure_success(resp)
             body = resp.json()
             external_id = body["issueId"]
@@ -71,11 +82,54 @@ class JsmAdapter(TicketSystem):
                 raise ValueError("Invalid issue ID")
             if not isinstance(external_key, str) or not external_key:
                 raise ValueError("Invalid issue key")
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as error:
+            raise TicketCreationDeferred("Не удалось подключиться к Jira") from error
         except httpx.RequestError as error:
-            raise TicketSystemError("Не удалось выполнить запрос к Jira") from error
+            raise TicketCreationUncertain("Jira не подтвердила создание заявки") from error
         except (KeyError, TypeError, ValueError) as error:
-            raise TicketSystemError("Jira вернула некорректный ответ") from error
+            raise TicketCreationUncertain("Jira вернула некорректный ответ") from error
         return TicketCreated(external_id=external_id, external_key=external_key)
+
+    async def find_by_reference(self, reference: str) -> TicketCreated | None:
+        if not re.fullmatch(r"BARSREQ[0-9a-f]{32}", reference):
+            raise ValueError("Invalid support request reference")
+        response = await self._http.post("/rest/api/3/search/jql", json={
+            "jql": f'description ~ "{reference}"',
+            "fields": ["description"],
+            "maxResults": 2,
+        })
+        _ensure_success(response)
+        result = response.json()
+        issues = result["issues"]
+        if len(issues) != 1 or result.get("nextPageToken"):
+            return None
+        issue = issues[0]
+        if reference not in str(issue.get("fields", {}).get("description")):
+            return None
+        external_id, external_key = issue["id"], issue["key"]
+        if not isinstance(external_id, str) or not external_id.isdigit():
+            raise ValueError("Invalid issue ID")
+        if not isinstance(external_key, str) or not external_key:
+            raise ValueError("Invalid issue key")
+        return TicketCreated(external_id=external_id, external_key=external_key)
+
+    async def has_attachment(self, issue_id_or_key: str, filename: str) -> bool:
+        path = f"/rest/servicedeskapi/request/{issue_id_or_key}/attachment"
+        start = 0
+        try:
+            while True:
+                response = await self._http.get(path, params={"start": start, "limit": 50})
+                self._ensure_attachment_success(response)
+                page = response.json()
+                if any(value["filename"] == filename for value in page["values"]):
+                    return True
+                if page["isLastPage"]:
+                    return False
+                if page["size"] <= 0:
+                    raise ValueError("Invalid Jira attachment page")
+                start += page["size"]
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
+            raise TicketSystemError("Не удалось проверить вложения заявки Jira") from error
 
     async def attach_file(
         self,

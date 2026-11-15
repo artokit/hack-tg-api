@@ -33,6 +33,14 @@ class TicketSystem(ABC):
         ...
 
     @abstractmethod
+    async def find_by_reference(self, reference: str) -> TicketCreated | None:
+        ...
+
+    @abstractmethod
+    async def has_attachment(self, issue_id_or_key: str, filename: str) -> bool:
+        ...
+
+    @abstractmethod
     async def attach_file(
         self,
         issue_id_or_key: str,

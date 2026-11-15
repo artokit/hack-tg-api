@@ -1,6 +1,7 @@
 import * as v from 'valibot';
 
-import { delivery } from './rag.js';
+import { delivery, needsRagClarification, type RagDelivery } from './rag.js';
+import type { RequestPhase } from './telegram-requests.js';
 
 const ragUnavailable = 'Поиск по документации сейчас недоступен. Попробуй ещё раз чуть позже.';
 
@@ -18,6 +19,40 @@ function originalLink(raw: string | null): string | null {
 }
 
 export type RagMessage = { text: string; html: string; available: boolean };
+
+export function supportRagReply(values: unknown[]): RagMessage & { phase: RequestPhase } {
+  const results = values.flatMap((value) => {
+    const parsed = v.safeParse(delivery, value);
+    return parsed.success ? [parsed.output] : [];
+  });
+  const result = results[results.length - 1];
+  if (result && result.status !== 'unavailable' && needsRagClarification(result)) {
+    return { ...renderClarification(result), phase: 'clarification' };
+  }
+  const phase = !result || result.status === 'unavailable' || result.search_incomplete ? 'technical' : 'answer';
+  return { ...renderRag(...results), phase };
+}
+
+export function supportedRagReply(values: unknown[]): RagMessage | undefined {
+  const supported = values.flatMap((value) => {
+    const parsed = v.safeParse(delivery, value);
+    if (!parsed.success || parsed.output.status === 'unavailable') return [];
+    const parts = parsed.output.parts.filter((part) => part.status === 'supported');
+    return parts.length ? [{ ...parsed.output, status: 'answered', parts }] : [];
+  });
+  return supported.length ? renderRag(...supported) : undefined;
+}
+
+function renderClarification(result: Exclude<RagDelivery, { status: 'unavailable' }>): RagMessage {
+  const focused = result.not_found_reply?.endsWith('?') ? result.not_found_reply : undefined;
+  const question = result.parts.find((part) => part.status === 'ambiguous' && part.clarification)?.clarification
+    ?? focused
+    ?? 'Уточни, пожалуйста, в каком разделе или при каком действии возник вопрос?';
+  const supported = result.parts.filter((part) => part.status === 'supported');
+  if (!supported.length) return { text: question, html: `<p>${escapeHtml(question)}</p>`, available: true };
+  const answer = renderRag({ ...result, status: 'answered', parts: supported });
+  return { ...answer, text: `${answer.text}\n\n${question}`, html: `${answer.html}<p>${escapeHtml(question)}</p>` };
+}
 
 function shorten(text: string, length: number): string {
   if (text.length <= length) return text;
