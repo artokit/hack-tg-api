@@ -68,12 +68,11 @@ class SupportRequestService:
         request = await self.get(request_id)
         if request.close_reason not in {"rag_exhausted", "operator_requested"}:
             raise SupportRequestConflict
-        category = request.category_id if request.category_id in TICKET_ROUTES else "default"
         ticket = Ticket(
             title=data.title,
             description=data.description,
-            category=category,
-            system=TICKET_ROUTES[category]["system"],
+            category="default",
+            system=TICKET_ROUTES["default"]["system"],
             status="queued",
             support_request_id=request.id,
             next_attempt_at=datetime.now(timezone.utc),

@@ -7,6 +7,7 @@ import { closedRequestCost } from '../request-pricing.js';
 import { createSupportTicket, saveClosedRequest } from '../support-api.js';
 import { closedRequest, type ClosedRequest, handoffDraft, type HandoffDraft, supportRequestClosed } from '../support-request.js';
 import { requestHistory } from '../telegram-requests.js';
+import { classifySupportRequest } from './support-request-classifier.js';
 
 const messageTime = new Intl.DateTimeFormat('ru-RU', {
   dateStyle: 'short', timeStyle: 'medium', timeZone: 'UTC',
@@ -24,6 +25,18 @@ async function conversationText(request: ClosedRequest): Promise<string> {
   return lines.join('\n\n') + '\n';
 }
 
+export async function saveSupportRequestOutcome(request: ClosedRequest): Promise<void> {
+  const cost = await closedRequestCost(request.request_id, request.instance_id);
+  await saveClosedRequest(request, cost, async () => {
+    try {
+      return await classifySupportRequest(await conversationText(request));
+    } catch (error) {
+      console.warn('Support request classification failed', request.request_id, error instanceof Error ? error.name : 'Error');
+      return 'other';
+    }
+  });
+}
+
 export function SupportRequestFinalizer() {
   const delivery = useDelivery();
   if (delivery.kind !== 'signal' || delivery.type !== supportRequestClosed) {
@@ -31,10 +44,7 @@ export function SupportRequestFinalizer() {
   }
   const request = v.parse(closedRequest, JSON.parse(delivery.body));
   useModel(`bars-chat/${modelId}`);
-  useAgentStart(async () => {
-    const cost = await closedRequestCost(request.request_id, request.instance_id);
-    await saveClosedRequest(request, cost);
-  });
+  useAgentStart(() => saveSupportRequestOutcome(request));
 
   const draft = request.handoff;
   if (!draft) return 'Итог обращения уже сохранён. Кратко подтверди завершение.';

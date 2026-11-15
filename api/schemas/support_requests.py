@@ -10,13 +10,17 @@ CloseReason = Literal[
     "technical_timeout", "reset", "delivery_failed", "rag_exhausted", "operator_requested",
     "user_requested", "spam",
 ]
+SupportRequestCategory = Literal[
+    "access", "navigation", "search_filters", "documents_records",
+    "business_processes", "employees_contacts", "other",
+]
 
 
 class SupportRequestCreate(BaseModel):
     id: UUID
     instance_id: str = Field(min_length=1)
     telegram_chat_id: int
-    category_id: str | None = Field(default=None, max_length=100)
+    category_id: SupportRequestCategory | None = None
     opened_at: AwareDatetime
     closed_at: AwareDatetime
     is_resolved: bool | None
@@ -36,6 +40,8 @@ class SupportRequestCreate(BaseModel):
 
 class SupportRequestRead(SupportRequestCreate):
     model_config = ConfigDict(from_attributes=True)
+
+    category_id: str | None = Field(default=None, max_length=100)
 
 
 class RequestCostRead(BaseModel):

@@ -3,22 +3,23 @@ import { setTimeout as delay } from 'node:timers/promises';
 import * as v from 'valibot';
 
 import { apiRequest, botRequest } from './bot-api.js';
-import type { ClosedRequest, HandoffDraft } from './support-request.js';
+import type { ClosedRequest, HandoffDraft, SupportRequestCategory } from './support-request.js';
 
-async function createIfMissing(readPath: string, createPath: string, body: object): Promise<void> {
+export async function saveClosedRequest(
+  event: ClosedRequest, cost: string | null, classify: () => Promise<SupportRequestCategory>,
+): Promise<void> {
+  const { request_id, handoff: _handoff, ...outcome } = event;
+  const readPath = `support-requests/${request_id}`;
   const existing = await botRequest(readPath);
   if (existing.ok) return;
   if (existing.status !== 404) throw new Error(`Support API status ${existing.status}`);
-  const created = await botRequest(createPath, { method: 'POST', body: JSON.stringify(body) });
+  const category = await classify();
+  const created = await botRequest('support-requests', {
+    method: 'POST',
+    body: JSON.stringify({ id: request_id, ...outcome, category_id: category, model_cost_rub: cost }),
+  });
   if (created.ok || (created.status === 409 && (await botRequest(readPath)).ok)) return;
   throw new Error(`Support API status ${created.status}`);
-}
-
-export function saveClosedRequest(event: ClosedRequest, cost: string | null): Promise<void> {
-  const { request_id, handoff: _handoff, ...outcome } = event;
-  return createIfMissing(`support-requests/${request_id}`, 'support-requests', {
-    id: request_id, ...outcome, model_cost_rub: cost,
-  });
 }
 
 const ticketRead = v.object({
