@@ -38,19 +38,25 @@ export function renderRag(...values: unknown[]): RagMessage {
   const labels = new Map<string, number>();
   const paragraphs: string[] = [];
   let missingEvidence = false;
-  for (const item of responses.flatMap((response) => response.parts)) {
-    if (item.status === 'supported') {
-      const ids = item.source_ids.filter((id) => sources.has(id));
-      if (!ids.length || !item.statement.trim()) {
+  for (const response of responses) {
+    if (response.status === 'not_found' && response.not_found_reply) {
+      paragraphs.push(response.not_found_reply);
+      continue;
+    }
+    for (const item of response.parts) {
+      if (item.status === 'supported') {
+        const ids = item.source_ids.filter((id) => sources.has(id));
+        if (!ids.length || !item.statement.trim()) {
+          missingEvidence = true;
+          continue;
+        }
+        for (const id of ids) if (!labels.has(id)) labels.set(id, labels.size + 1);
+        paragraphs.push(`${item.statement} ${ids.map((id) => `[${labels.get(id)}]`).join(' ')}`);
+      } else if (item.clarification.trim()) {
+        paragraphs.push(item.clarification);
+      } else {
         missingEvidence = true;
-        continue;
       }
-      for (const id of ids) if (!labels.has(id)) labels.set(id, labels.size + 1);
-      paragraphs.push(`${item.statement} ${ids.map((id) => `[${labels.get(id)}]`).join(' ')}`);
-    } else if (item.clarification.trim()) {
-      paragraphs.push(item.clarification);
-    } else {
-      missingEvidence = true;
     }
   }
   if (!paragraphs.length) {

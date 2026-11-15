@@ -23,10 +23,12 @@ const part = v.object({
   source_ids: v.array(v.string()),
   clarification: v.string(),
 });
+const notFoundText = v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(240));
 const answer = v.object({
   status: v.picklist(['answered', 'partial', 'clarify', 'not_found']),
   parts: v.array(part),
   sources: v.array(source),
+  not_found_reply: v.optional(notFoundText),
 });
 export const delivery = v.union([answer, v.object({ status: v.literal('unavailable') })]);
 export type RagDelivery = v.InferOutput<typeof delivery>;
@@ -57,6 +59,7 @@ const selection = v.object({
     })), v.maxLength(3)), []),
   })), v.maxLength(6)),
 });
+const notFoundResult = v.object({ reply: notFoundText });
 type Evidence = v.InferOutput<typeof evidence>;
 type SearchPart = { question: string; exactId?: string };
 
@@ -119,6 +122,23 @@ function cite(block: Evidence, proposed: string | null | undefined): RagSource |
     title: block.title, url, page: block.page, section: block.section,
     identifiers: block.identifiers, quote, visual,
   };
+}
+
+async function notFoundReply(agent: Agent, question: string, signal: AbortSignal): Promise<string | undefined> {
+  try {
+    const result = await withTransientHarness(agent, undefined, (harness) => harness.prompt(
+      `${ragPrompts.not_found}\n${JSON.stringify({ original_question: question })}`,
+      {
+        model: ragModelId,
+        result: notFoundResult,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(8_000)]),
+      },
+    ));
+    return result.data.reply;
+  } catch (error) {
+    console.warn('RAG no-result reply unavailable', error instanceof Error ? error.name : 'Error');
+    return undefined;
+  }
 }
 
 async function answerFromDocs(
@@ -196,6 +216,11 @@ async function answerFromDocs(
       const status = supported && supported === answers.length ? 'answered' : supported ? 'partial'
         : answers.some((part) => part.status === 'ambiguous') ? 'clarify' : 'not_found';
       result = { status, parts: answers, sources: [...sources.values()] };
+      if (status === 'not_found' && searches.every((search) => search.status === 'fulfilled')) {
+        const reply = await notFoundReply(agent, question, operation);
+        signal?.throwIfAborted();
+        if (reply) result.not_found_reply = reply;
+      }
     }
   } catch (error) {
     if (signal?.aborted) throw error;
