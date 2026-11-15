@@ -1,12 +1,12 @@
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from models.document_analytics import DocumentFormat, DocumentSize
 from repositories.document_analytics import DocumentAnalyticsRepository
 from repositories.technical_analytics import PrometheusRepository, PrometheusUnavailable
-from schemas.document_analytics import DocumentAnalyticsRead, DocumentFormatsRead, DocumentTokensRead
-from schemas.technical_analytics import WorkloadTokensRead
-from services.technical_analytics import token_increase, workload_tokens
+from schemas.document_analytics import DocumentAnalyticsRead, DocumentFormatsRead, DocumentRange, DocumentTokensRead
+from schemas.technical_analytics import TechnicalRange, WorkloadTokensRead
+from services.technical_analytics import WINDOWS, token_increase, workload_tokens
 
 
 class DocumentAnalyticsService:
@@ -14,10 +14,21 @@ class DocumentAnalyticsService:
         self._repository = repository
         self._prometheus = prometheus
 
-    async def read(self, format: DocumentFormat | None, size: DocumentSize | None) -> DocumentAnalyticsRead:
+    async def read(
+        self, format: DocumentFormat | None, size: DocumentSize | None, period: DocumentRange | None,
+    ) -> DocumentAnalyticsRead:
         now = datetime.now(UTC)
-        summary, tokens = await asyncio.gather(self._repository.summary(format, size), self._read_tokens(now))
+        window: TechnicalRange | None = "24h" if period == "1d" else period
+        from_at = now - WINDOWS[window] if window is not None else None
+        token_window = window or "24h"
+        summary, tokens = await asyncio.gather(
+            self._repository.summary(format, size, from_at, now),
+            self._read_tokens(now, token_window),
+        )
         return DocumentAnalyticsRead(
+            range=window,
+            from_at=from_at,
+            to_at=now,
             upload_count=summary.upload_count,
             total_size_bytes=summary.total_size_bytes,
             known_size_count=summary.known_size_count,
@@ -29,14 +40,14 @@ class DocumentAnalyticsService:
                 doc_docx=summary.doc_docx_count,
                 other=summary.upload_count - summary.pdf_count - summary.doc_docx_count,
             ),
-            tokens=DocumentTokensRead(from_at=now - timedelta(days=1), to_at=now, document_import=tokens),
+            tokens=DocumentTokensRead(from_at=now - WINDOWS[token_window], to_at=now, document_import=tokens),
         )
 
-    async def _read_tokens(self, at: datetime) -> WorkloadTokensRead | None:
+    async def _read_tokens(self, at: datetime, window: TechnicalRange) -> WorkloadTokensRead | None:
         if self._prometheus is None:
             return None
         try:
-            samples = await self._prometheus.query(token_increase("document_import", "24h"), at)
+            samples = await self._prometheus.query(token_increase("document_import", window), at)
         except PrometheusUnavailable:
             return None
         return workload_tokens(samples, "document_import")

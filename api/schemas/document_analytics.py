@@ -1,8 +1,12 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
 
-from schemas.technical_analytics import WorkloadTokensRead
+from schemas.technical_analytics import TechnicalRange, WorkloadTokensRead
+
+
+DocumentRange = Literal["1h", "1d", "24h", "7d"]
 
 
 class DocumentFormatsRead(BaseModel):
@@ -18,6 +22,9 @@ class DocumentTokensRead(BaseModel):
 
 
 class DocumentAnalyticsRead(BaseModel):
+    range: TechnicalRange | None
+    from_at: datetime | None
+    to_at: datetime
     upload_count: int
     total_size_bytes: int
     known_size_count: int
