@@ -49,12 +49,6 @@ class ConfluenceSettings(BaseSettings):
     confluence_api_token: SecretStr = SecretStr("")
 
 
-class GithubSettings(BaseSettings):
-    model_config = DatabaseSettings.model_config
-
-    github_webhook_secret: SecretStr | None = Field(default=None, min_length=32)
-
-
 _jira = JiraSettings()
 TICKET_ROUTES: dict[str, dict] = {
     "default": {

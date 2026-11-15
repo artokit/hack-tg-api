@@ -17,7 +17,6 @@ from config import (
     DatabaseSettings,
     EmbeddingSettings,
     FileSettings,
-    GithubSettings,
     InviteSettings,
     RedisSettings,
 )
@@ -52,7 +51,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.auth_settings = AuthSettings()
     app.state.invite_settings = InviteSettings()
     confluence_settings = ConfluenceSettings()
-    github_settings = GithubSettings()
     embeddings = EmbeddingSettings()
     redis_settings = RedisSettings()
     analytics = AnalyticsSettings()
@@ -117,11 +115,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             uploads = RagUploads(index.key)
             app.state.rag_service = RagService(jobs, index, files, RagCache(rag_redis))
             github = GithubRepository(http)
-            if github_settings.github_webhook_secret:
-                app.state.github_service = GithubService(
-                    github, GithubSyncRepository(jobs, index.key),
-                    github_settings.github_webhook_secret.get_secret_value(),
-                )
+            github_service = GithubService(github, GithubSyncRepository(jobs, index.key))
+            app.state.github_service = github_service
 
             async def load_import(job: RagImport) -> bytes:
                 if job.source_kind == "github":
@@ -129,7 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 return await files.load(job.file_id) if job.file_id else await uploads.load(job)
 
             importer = RagIngest(
-                jobs, index, model, load_import, uploads.discard, files, confluence, app.state.github_service,
+                jobs, index, model, load_import, uploads.discard, files, confluence, github_service,
             )
             worker = asyncio.create_task(importer.worker(), name="rag-import")
             stack.push_async_callback(stop_worker, worker)

@@ -4,7 +4,7 @@ import * as v from 'valibot';
 import { httpUrl, required } from './config.js';
 import { ragModelId } from './provider.js';
 import { ragPrompts } from './rag-prompts.js';
-import { asksAboutAppearance, selectVisuals } from './rag-visual.js';
+import { selectVisuals } from './rag-visual.js';
 import { withTransientHarness } from './transient-harness.js';
 import { measureRag } from './telemetry.js';
 
@@ -163,7 +163,7 @@ async function notFoundReply(
 }
 
 async function answerFromDocs(
-  agent: Agent, question: string, questions: string[] | undefined, standalone: boolean, visual: boolean,
+  agent: Agent, question: string, questions: string[] | undefined, standalone: boolean,
   signal?: AbortSignal,
 ): Promise<RagDelivery> {
   let result: RagDelivery;
@@ -177,17 +177,15 @@ async function answerFromDocs(
         clarification: 'Укажите до шести пунктов за один вопрос.',
       }], sources: [] };
     } else {
-      const visualParts = parts.map((part) => asksAboutAppearance(part.question)
-        || parts.length === 1 && (visual || asksAboutAppearance(question)));
       const searches = await measureRag('search', async () => {
-        const results = await Promise.allSettled(parts.map((item, index) =>
-          search(item, question, standalone, visualParts[index], operation)));
+        const results = await Promise.allSettled(parts.map((item) =>
+          search(item, question, standalone, true, operation)));
         if (results.every((item) => item.status === 'rejected')) throw new Error('RAG search unavailable');
         return results;
       });
       const candidates = searches.map((item) => item.status === 'fulfilled' ? item.value : []);
-      const { images, byPart } = await selectVisuals(agent, parts.flatMap((part, index) =>
-        visualParts[index] ? [{ index, question: part.question, evidence: candidates[index] }] : [],
+      const { images, byPart } = await selectVisuals(agent, parts.map((part, index) =>
+        ({ index, question: part.question, evidence: candidates[index] }),
       ), operation);
       const maxChars = Math.floor(10000 / Math.max(1, candidates.filter((item) => item.length).length));
       const presented = candidates.map((items, index) => {
@@ -242,6 +240,15 @@ async function answerFromDocs(
           cited.push(source);
         }
         if (!cited.length) return fallback;
+        const image = byPart.get(index);
+        const visualBlock = image && candidates[index].find((block) => block.id === image.id);
+        if (visualBlock && cited.some((source) =>
+          source.title === visualBlock.title && (
+            source.url === visualBlock.source_url || source.url?.split('#')[0] === visualBlock.source_url
+          ))) {
+          const visualSource = cite(visualBlock, null);
+          if (visualSource && !cited.some((source) => source.id === visualSource.id)) cited.push(visualSource);
+        }
         for (const source of cited) sources.set(source.id, source);
         return {
           ...fallback, status: 'supported', statement: selectedPart.statement,
@@ -290,7 +297,7 @@ export function answerTool(agent: Agent, question: string, write: (data: RagDeli
       const queries = lookup?.kind === 'split' ? lookup.queries : lookup && [lookup.query];
       const questions = queries?.map(normalizeSearchPhrase);
       const result = await answerFromDocs(
-        agent, question, questions, !lookup || lookup.kind === 'standalone', data.visual, signal,
+        agent, question, questions, !lookup || lookup.kind === 'standalone', signal,
       );
       write(result);
       return {

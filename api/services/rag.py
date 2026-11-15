@@ -98,12 +98,8 @@ class RagService:
         return job_id, source_id
 
     async def submit_confluence(self, space_id: str, page_id: str) -> tuple[UUID, str]:
-        job_id = uuid4()
         source_id = f"confluence:{page_id}"
-        await self.jobs.enqueue(
-            job_id, self.index.key, source_id, None, None, "html",
-            source_kind="confluence", source_locator={"space_id": space_id, "page_id": page_id},
-        )
+        job_id = await self.jobs.enqueue_confluence(self.index.key, source_id, space_id, page_id)
         return job_id, source_id
 
     async def read_job(self, job_id: UUID):

@@ -76,7 +76,7 @@ class RagIngest:
         self, jobs: RagJobs, index: RagIndex, model: RagModel,
         load: Callable[[RagImport], Awaitable[bytes]], discard_upload: Callable[[UUID], None],
         files: RagFiles,
-        confluence: ConfluenceService, github: GithubService | None = None,
+        confluence: ConfluenceService, github: GithubService,
     ):
         self.jobs = jobs
         self.index = index
@@ -94,8 +94,7 @@ class RagIngest:
                 async with self.jobs.worker_lock(self.index.key) as locked:
                     if locked:
                         while True:
-                            if self.github:
-                                await self.github.sync_pending()
+                            await self.github.sync_pending()
                             now = asyncio.get_running_loop().time()
                             if now >= next_cleanup:
                                 await self.purge_artifacts()
@@ -172,13 +171,10 @@ class RagIngest:
                 if job.source_kind == "confluence":
                     page = await self.load_confluence(job.source_locator or {})
                     job = replace(job, title=page.title[:250], source_url=page.url, source_revision=str(page.version))
-                    active = await self.jobs.active_source_revision(job.source_id, self.index.key)
-                    refresh = (job.source_locator or {}).get("refresh_visuals") == "true"
-                    if active is not None and (page.version < int(active) or page.version == int(active) and not refresh):
-                        await self.jobs.skip(job)
+                    data = page.content_html.encode("utf-8")
+                    if await self.jobs.restore_confluence(job, self.index.key, page.version, len(data)):
                         log.info("RAG import %s skipped Confluence version %d", job.id, page.version)
                         return
-                    data = page.content_html.encode("utf-8")
                     if len(data) > MAX_DOCUMENT_BYTES:
                         raise DocumentTooLarge("document_too_large")
                     try:
