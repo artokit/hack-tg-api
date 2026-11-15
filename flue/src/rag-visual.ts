@@ -14,17 +14,17 @@ const maxVisualText = 420;
 type VisualPart = { index: number; question: string; evidence: Evidence[] };
 
 export function asksAboutAppearance(question: string): boolean {
-  return /(?:^|[^\p{L}])(?:цвет|скриншот|подсвеч|выгляд|выделен|пиктограмм|иконк)\p{L}*/iu.test(question)
+  return /(?:^|[^\p{L}])(?:цвет|скрин|подсвеч|выгляд|выделен|пиктограмм|иконк)\p{L}*/iu.test(question)
     || /(?:кнопк|значок)/iu.test(question) && /(?:расположен|где на форме|где на экране|какого вида)/iu.test(question);
 }
 
 function visualCandidates(evidence: Evidence[], limit: number) {
-  const areas = new Map<string, { id: string; title: string; page: number; label: string; text: string }>();
+  const areas = new Map<string, { id: string; title: string; page: number | null; label: string; text: string }>();
   const ranked = evidence.toSorted((a, b) =>
     (a.visual_rank ?? Number.MAX_SAFE_INTEGER) - (b.visual_rank ?? Number.MAX_SAFE_INTEGER));
   for (const block of ranked) {
-    if (block.format !== 'pdf' || !block.page || !block.box || !['visual', 'scan'].includes(block.kind)) continue;
-    const key = JSON.stringify([block.source_url ?? block.title, block.page, block.box]);
+    if (!block.image_key) continue;
+    const key = block.image_key;
     const existing = areas.get(key);
     const text = [...block.columns, block.text].filter(Boolean).join(' | ');
     if (existing) {
@@ -41,16 +41,18 @@ function visualCandidates(evidence: Evidence[], limit: number) {
   return [...areas.values()];
 }
 
-async function loadImage(id: string, signal: AbortSignal): Promise<ImageContent | undefined> {
+export async function fetchRagImage(id: string, signal?: AbortSignal, telegram = false): Promise<Buffer | undefined> {
+  const timeout = AbortSignal.timeout(10_000);
+  const query = telegram ? '?telegram=true' : '';
   try {
-    const response = await fetch(`${httpUrl('API_URL')}/internal/rag/visual/${encodeURIComponent(id)}`, {
-      signal: AbortSignal.any([signal, AbortSignal.timeout(10_000)]),
+    const response = await fetch(`${httpUrl('API_URL')}/internal/rag/visual/${encodeURIComponent(id)}${query}`, {
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       headers: { 'X-Bot-Token': required('BOT_API_TOKEN') },
     });
     if (!response.ok || response.headers.get('content-type') !== 'image/png') return;
-    return { type: 'image', mimeType: 'image/png', data: Buffer.from(await response.arrayBuffer()).toString('base64') };
+    return Buffer.from(await response.arrayBuffer());
   } catch (error) {
-    signal.throwIfAborted();
+    signal?.throwIfAborted();
     console.warn('RAG image unavailable', error instanceof Error ? error.name : 'Error');
   }
 }
@@ -83,10 +85,12 @@ export async function selectVisuals(agent: Agent, parts: VisualPart[], signal: A
     return id !== null && options.some((candidate) => candidate.id === id) ? [{ index, id }] : [];
   });
   const uniqueIds = [...new Set(chosen.map(({ id }) => id))];
-  const loaded = await Promise.all(uniqueIds.map((id) => loadImage(id, signal)));
+  const loaded = await Promise.all(uniqueIds.map((id) => fetchRagImage(id, signal)));
   const imageNumbers = new Map<string, number>();
   for (const [position, image] of loaded.entries()) {
-    if (image) imageNumbers.set(uniqueIds[position], images.push(image));
+    if (image) imageNumbers.set(uniqueIds[position], images.push({
+      type: 'image', mimeType: 'image/png', data: image.toString('base64'),
+    }));
   }
   for (const { index, id } of chosen) {
     const image_number = imageNumbers.get(id);

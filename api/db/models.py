@@ -118,6 +118,15 @@ class RagDocument(Base):
     active_version: Mapped[str] = mapped_column(String(36))
 
 
+class RagVisualFile(Base):
+    __tablename__ = "rag_visual_files"
+    __table_args__ = (Index("ix_rag_visual_files_version", "index_key", "version"),)
+
+    file_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    index_key: Mapped[str] = mapped_column(String(64))
+    version: Mapped[str] = mapped_column(String(36))
+
+
 class RagGithubSync(Base):
     __tablename__ = "rag_github_syncs"
 

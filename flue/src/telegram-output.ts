@@ -1,10 +1,12 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { Api, GrammyError } from 'grammy';
+import { Api, GrammyError, InputFile } from 'grammy';
 
+import { fetchRagImage } from './rag-visual.js';
 import { recordDelivery } from './telemetry.js';
 import type { DeliveryKind, DeliveryReceipt, DeliveryStatus, TelegramStore } from './telegram-store.js';
 
 export type DeliveryResult = DeliveryReceipt & { startedAt?: number; finishedAt?: number };
+type ReplyPhoto = { id: string; media: { type: 'photo'; media: InputFile } };
 
 export function splitReply(text: string): string[] {
   const parts: string[] = [];
@@ -29,6 +31,14 @@ async function withRateLimit<T>(send: () => Promise<T>): Promise<T> {
     await delay(seconds * 1000);
     return await send();
   }
+}
+
+async function loadReplyPhotos(images: string[]): Promise<ReplyPhoto[]> {
+  const files = await Promise.all(images.map((id) => fetchRagImage(id, undefined, true)));
+  return files.flatMap((file, index) => file ? [{
+    id: `photo_${index + 1}`,
+    media: { type: 'photo', media: new InputFile(file, `screenshot-${index + 1}.png`) },
+  }] : []);
 }
 
 export class TelegramOutput {
@@ -72,13 +82,14 @@ export class TelegramOutput {
   }
 
   async send(
-    id: string, chatId: string, text: string, kind: DeliveryKind, markdown: boolean, html?: string,
+    id: string, chatId: string, text: string, kind: DeliveryKind, markdown: boolean, html?: string, images?: string[],
   ): Promise<DeliveryResult> {
+    const media = html && images?.length ? await loadReplyPhotos(images) : [];
     if (!await this.store.claimDelivery(id, kind)) return this.store.delivery(id);
     const startedAt = Date.now();
     let status: DeliveryStatus = 'sent';
     try {
-      await this.sendText(chatId, text, markdown, html);
+      await this.sendMessage(chatId, text, markdown, html, media);
     } catch (error) {
       status = error instanceof GrammyError && error.error_code < 500 ? 'failed' : 'unknown';
       console.warn('Telegram delivery', status, id, error instanceof Error ? error.name : 'Error');
@@ -89,7 +100,18 @@ export class TelegramOutput {
     return { ...receipt, startedAt, finishedAt };
   }
 
-  private async sendText(chatId: string, text: string, markdown: boolean, html?: string): Promise<void> {
+  private async sendMessage(
+    chatId: string, text: string, markdown: boolean, html: string | undefined, media: ReplyPhoto[],
+  ): Promise<void> {
+    if (html && media.length) {
+      const photos = media.map(({ id }) => `<img src="tg://photo?id=${id}"/>`).join('');
+      try {
+        await withRateLimit(() => this.client.sendRichMessage(chatId, { html: html + photos, media }));
+        return;
+      } catch (error) {
+        if (!(error instanceof GrammyError) || ![400, 413].includes(error.error_code)) throw error;
+      }
+    }
     if (html || markdown) {
       try {
         await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }));

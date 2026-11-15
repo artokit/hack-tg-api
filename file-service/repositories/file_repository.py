@@ -2,6 +2,7 @@ from typing import Optional
 from uuid import UUID
 
 from sqlalchemy import delete, insert, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from db.db import async_session_maker
 from models.file import File
 
@@ -25,6 +26,14 @@ class FileRepository:
         res = file.one_or_none()
 
         return res[0] if res else None
+
+    async def reserve_visual(self, file_id: UUID) -> bool:
+        async with async_session_maker.begin() as session:
+            await session.execute(pg_insert(File).values(
+                id=file_id, name="screenshot.png", extension="png",
+            ).on_conflict_do_nothing(index_elements=[File.id]))
+            file = await session.get(File, file_id)
+            return bool(file and file.name == "screenshot.png" and file.extension == "png")
 
     async def delete_file(self, file_id: UUID) -> None:
         async with async_session_maker.begin() as session:

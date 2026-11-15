@@ -133,8 +133,11 @@ class GithubSyncRepository:
                     job.version == active_version and job.source_revision == document.revision for job in jobs
                 )
                 pending = [job for job in jobs if job.status in PENDING_STATUSES]
-                keep = next((job for job in pending if job.source_revision == document.revision), None)
-                await self.jobs.schedule_source_cleanup(session, [job for job in pending if current or job is not keep])
+                keep = next((
+                    job for job in pending if job.source_revision == document.revision
+                    and (not current or (job.source_locator or {}).get("refresh_visuals") == "true")
+                ), None)
+                await self.jobs.schedule_source_cleanup(session, [job for job in pending if job is not keep])
                 if not current and keep is None:
                     session.add(RagJob(
                         index_key=self.index_key, source_id=source_id, title=document.title,

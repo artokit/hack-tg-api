@@ -17,6 +17,7 @@ const source = v.object({
   identifiers: v.optional(v.array(v.string()), []),
   quote: v.nullable(v.string()),
   visual: v.boolean(),
+  image_key: v.nullish(v.string()),
 });
 const part = v.object({
   question: v.string(),
@@ -57,6 +58,7 @@ const evidence = v.object({
   columns: v.optional(v.array(v.string()), []),
   box: v.nullish(v.tuple([v.number(), v.number(), v.number(), v.number()])),
   visual_rank: v.nullish(v.number()),
+  image_key: v.nullish(v.string()),
 });
 const selection = v.object({
   parts: v.pipe(v.array(v.object({
@@ -137,7 +139,7 @@ function cite(block: Evidence, proposed: string | null | undefined): RagSource |
   return {
     id: match ? `${block.id}:${match.index}:${match[0].length}` : block.id,
     title: block.title, url, page: block.page, section: block.section,
-    identifiers: block.identifiers, quote, visual,
+    identifiers: block.identifiers, quote, visual, image_key: block.image_key,
   };
 }
 
