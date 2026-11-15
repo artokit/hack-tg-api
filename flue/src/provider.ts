@@ -13,7 +13,9 @@ const apiKey = process.env.CHAT_API_KEY?.trim();
 const baseUrl = httpUrl('CHAT_BASE_URL');
 const documentModelId = `${modelId}:documents`;
 export const ragModelId = `bars-chat/${documentModelId}`;
-const openrouter = new URL(baseUrl).hostname === 'openrouter.ai';
+const providerHost = new URL(baseUrl).hostname;
+const openrouter = providerHost === 'openrouter.ai';
+const directLuna = providerHost === 'api.openai.com' && modelId === 'gpt-6-luna';
 
 const api = openAICompletionsApi();
 const requestLimits = { timeoutMs: 20_000, maxRetries: 0 };
@@ -31,7 +33,8 @@ const chatModel = {
 };
 
 function requestOptions<T extends ProviderRequestOptions>(model: string, options: T | undefined) {
-  if (model !== documentModelId) return { ...options, ...requestLimits };
+  const documents = model === documentModelId;
+  if (!documents && !directLuna) return { ...options, ...requestLimits };
   return {
     ...options,
     ...requestLimits,
@@ -39,8 +42,9 @@ function requestOptions<T extends ProviderRequestOptions>(model: string, options
       const transformed = await options?.onPayload?.(payload, model);
       return {
         ...((transformed ?? payload) as Record<string, unknown>),
-        model: modelId,
-        ...(openrouter ? { provider: { data_collection: 'deny', zdr: true } } : {}),
+        ...(documents ? { model: modelId } : {}),
+        ...(documents && openrouter ? { provider: { data_collection: 'deny', zdr: true } } : {}),
+        ...(directLuna ? { reasoning_effort: 'none' } : {}),
       };
     },
   };
