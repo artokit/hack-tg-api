@@ -75,6 +75,11 @@ function identifiers(text: string): string[] {
   ))];
 }
 
+function normalizeSearchPhrase(phrase: string): string {
+  const normalized = phrase.normalize('NFC').replace(/\s+/gu, ' ').replace(/[?!.]+$/u, '').trim();
+  return normalized || phrase;
+}
+
 function searchParts(original: string, questions?: string[]): SearchPart[] {
   const explicit = identifiers(original);
   const parts: SearchPart[] = [];
@@ -100,13 +105,13 @@ function searchParts(original: string, questions?: string[]): SearchPart[] {
   ];
 }
 
-async function search(item: SearchPart, original: string, signal: AbortSignal): Promise<Evidence[]> {
+async function search(item: SearchPart, original: string, standalone: boolean, signal: AbortSignal): Promise<Evidence[]> {
   const response = await fetch(`${httpUrl('API_URL')}/internal/rag/search`, {
     method: 'POST',
     signal,
     headers: { 'Content-Type': 'application/json', 'X-Bot-Token': required('BOT_API_TOKEN') },
     body: JSON.stringify({
-      question: item.question, original_question: original, exact_id: item.exactId,
+      question: item.question, original_question: original, exact_id: item.exactId, standalone,
     }),
   });
   if (!response.ok) throw new Error(`RAG search status ${response.status}`);
@@ -147,7 +152,7 @@ async function notFoundReply(agent: Agent, question: string, signal: AbortSignal
 }
 
 async function answerFromDocs(
-  agent: Agent, question: string, questions?: string[], signal?: AbortSignal,
+  agent: Agent, question: string, questions: string[] | undefined, standalone: boolean, signal?: AbortSignal,
 ): Promise<RagDelivery> {
   let result: RagDelivery;
   try {
@@ -160,7 +165,7 @@ async function answerFromDocs(
         clarification: 'Укажи до шести пунктов за один вопрос.',
       }], sources: [] };
     } else {
-      const searches = await Promise.allSettled(parts.map((item) => search(item, question, operation)));
+      const searches = await Promise.allSettled(parts.map((item) => search(item, question, standalone, operation)));
       if (searches.every((item) => item.status === 'rejected')) throw new Error('RAG search unavailable');
       const candidates = searches.map((item) => item.status === 'fulfilled' ? item.value : []);
       const maxChars = Math.floor(10000 / Math.max(1, candidates.filter((item) => item.length).length));
@@ -242,12 +247,22 @@ export function answerTool(agent: Agent, question: string, write: (data: RagDeli
   return defineTool({
     name: 'answer_from_docs',
     timeoutMs: 55_000,
-    description: 'Ответь на вопрос по документации БАРС. Для просьб написать код или решить задачу по программированию используй reply_in_chat. Для составного вопроса передай независимые вопросы в questions, сохрани точные ID и названия. Для уточнения передай вопрос с учётом контекста.',
+    description: 'Найди ответ в документации БАРС. Передай lookup с краткой поисковой формулировкой. Используй standalone для самостоятельного вопроса, follow_up для уточнения по истории, split для независимых вопросов. Сохраняй точные названия, ID и условия. Для задач по программированию используй reply_in_chat.',
     input: v.object({
-      questions: v.optional(v.pipe(v.array(questionPart), v.minLength(1), v.maxLength(6))),
+      lookup: v.optional(v.variant('kind', [
+        v.object({ kind: v.literal('standalone'), query: questionPart }),
+        v.object({ kind: v.literal('follow_up'), query: questionPart }),
+        v.object({
+          kind: v.literal('split'),
+          queries: v.pipe(v.array(questionPart), v.minLength(2), v.maxLength(6)),
+        }),
+      ])),
     }),
     async run({ data, signal }) {
-      const result = await answerFromDocs(agent, question, data.questions, signal);
+      const lookup = data.lookup;
+      const queries = lookup?.kind === 'split' ? lookup.queries : lookup && [lookup.query];
+      const questions = queries?.map(normalizeSearchPhrase);
+      const result = await answerFromDocs(agent, question, questions, !lookup || lookup.kind === 'standalone', signal);
       const handoffRequired = write(result);
       return {
         output: {
