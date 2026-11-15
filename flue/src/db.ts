@@ -66,6 +66,12 @@ export default {
       );
       ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS received_at timestamptz;
       ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS processing_at timestamptz;
+      ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS spam_fingerprint text;
+      ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS spam_reported boolean NOT NULL DEFAULT false;
+      ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS spam_ban_requested_at timestamptz;
+      ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS spam_ban_expires_at timestamptz;
+      CREATE INDEX IF NOT EXISTS bars_telegram_spam_window
+        ON bars_telegram_updates (bot_id, chat_id, received_at) WHERE spam_fingerprint IS NOT NULL;
       CREATE INDEX IF NOT EXISTS bars_telegram_pending_updates
         ON bars_telegram_updates (bot_id, sequence) WHERE finished_at IS NULL;
       CREATE INDEX IF NOT EXISTS bars_telegram_update_submission
@@ -95,6 +101,7 @@ export default {
 
       ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS request_id uuid;
       ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS request_phase text;
+      ALTER TABLE bars_telegram_sessions ADD COLUMN IF NOT EXISTS spam_blocked_until timestamptz;
       ALTER TABLE bars_telegram_deliveries ADD COLUMN IF NOT EXISTS sent_at timestamptz;
 
       CREATE TABLE IF NOT EXISTS bars_telegram_requests (
@@ -118,6 +125,10 @@ export default {
 
       CREATE UNIQUE INDEX IF NOT EXISTS bars_telegram_active_request
         ON bars_telegram_requests (bot_id, chat_id) WHERE closed_at IS NULL;
+      ALTER TABLE bars_telegram_requests ADD COLUMN IF NOT EXISTS phase_sequence bigint;
+      ALTER TABLE bars_telegram_requests ADD COLUMN IF NOT EXISTS conversation_only boolean NOT NULL DEFAULT false;
+      UPDATE bars_telegram_requests SET phase_sequence = latest_sequence
+        WHERE closed_at IS NULL AND phase_sequence IS NULL;
       CREATE INDEX IF NOT EXISTS bars_telegram_due_request
         ON bars_telegram_requests (bot_id, due_at) WHERE closed_at IS NULL AND due_at IS NOT NULL;
       CREATE INDEX IF NOT EXISTS bars_telegram_due_finalization

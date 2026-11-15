@@ -5,3 +5,4 @@ from dataclasses import dataclass
 class BanState:
     ban_level: int
     retry_after_seconds: int
+    expires_at_ms: int

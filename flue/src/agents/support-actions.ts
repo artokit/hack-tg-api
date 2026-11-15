@@ -3,14 +3,14 @@ import * as v from 'valibot';
 
 import { requestedCloseReason, type SupportAction } from '../support-request.js';
 
-export function banTool(write: (action: SupportAction) => void) {
+export function reportSpamTool(report: () => void) {
   return defineTool({
-    name: 'ban_user',
-    description: 'Заблокируй текущего пользователя за явную спам-рассылку или повторяющийся бессодержательный флуд. Не блокируй за обычные вопросы, уточнения, отрицательную обратную связь, просьбу об операторе или единичное сообщение не по теме. ID и срок определит бот автоматически.',
+    name: 'report_spam',
+    description: 'Отметь текущую реплику, только если это явный спам или часть бессодержательного потока. Затем выбери инструмент ответа. Отдельная отметка не блокирует сотрудника.',
     input: v.object({}),
     run() {
-      write({ action: 'ban' });
-      return { output: 'Блокировка за флуд или спам запрошена. Бот сообщит срок пользователю.', terminate: true };
+      report();
+      return 'Реплика отмечена. Выбери, как её обработать.';
     },
   });
 }

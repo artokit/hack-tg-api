@@ -12,17 +12,17 @@ import { getSupportKeyboard, type SupportButtons } from './keyboards/support.js'
 import { getSupportTicketUrl } from './support-api.js';
 import { recordDelivery, recordReplyDuration } from './telemetry.js';
 import { attachmentSummary, loadAttachment } from './telegram-attachments.js';
-import { attachmentReply, isAcknowledgement, isCloseRequest, renderChatReply } from './telegram-chat.js';
+import { attachmentReply, chatReply, isCloseRequest, renderChatReply } from './telegram-chat.js';
 import { type ClosedRequest, type CloseReason, isOperatorRequest, type ReplyFlags, type SupportAction, supportAction, supportRequestClosed } from './support-request.js';
 import { renderRag, supportRagReply } from './telegram-rag.js';
 import { type DeliveryResult, TelegramOutput } from './telegram-output.js';
 import { type ActiveRequest, type RequestPhase, TelegramRequests } from './telegram-requests.js';
+import { telegramTextDelivery } from './telegram-spam.js';
 import { type DeliveryKind, type PendingUpdate, TelegramStore } from './telegram-store.js';
 
 const unavailable = 'Сейчас не получается ответить. Попробуйте чуть позже.';
 const feedbackQuestion = 'Удалось решить вопрос?';
 const detailsQuestion = 'Что осталось нерешённым?';
-const closeQuestion = 'Закрыть обращение или продолжим?';
 const closedAnswer = 'Обращение закрыто.';
 const handoffAnswer = 'Передаю вопрос специалисту.';
 const inviteIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -60,6 +60,7 @@ export class TelegramWorker {
   private scanning = false;
   private recovered = false;
   private attachmentAdmissions = 0;
+  private nextSpamCleanup = 0;
   private botInfo: Context['me'] | undefined;
 
   constructor(
@@ -98,6 +99,9 @@ export class TelegramWorker {
         for (const kind of await this.store.recoverDeliveries()) recordDelivery(kind, 'unknown');
         this.recovered = true;
       }
+      if (Date.now() >= this.nextSpamCleanup && await this.store.pruneSpamEvidence() < 2000) {
+        this.nextSpamCleanup = Date.now() + 60_000;
+      }
       await this.processDeadlines();
       for (const { outcome, finalizer_attempt } of await this.requests.finalizations()) {
         if (this.finalizing.has(outcome.request_id)) continue;
@@ -105,8 +109,15 @@ export class TelegramWorker {
         void this.finalize(outcome, finalizer_attempt);
       }
       const blockedChats = new Set<string>();
+      const pendingChats = new Set<string>();
       for (const update of await this.store.pending()) {
+        const earlierPending = pendingChats.has(update.chat_id);
+        pendingChats.add(update.chat_id);
         if (this.processing.has(update.sequence) || this.replies.has(update.chat_id) || blockedChats.has(update.chat_id)) continue;
+        if (earlierPending && update.payload.supportAction) {
+          blockedChats.add(update.chat_id);
+          continue;
+        }
         const loadsAttachment = !!update.payload.attachment && update.submission_id === null;
         if (loadsAttachment && this.attachmentAdmissions >= 4) {
           blockedChats.add(update.chat_id);
@@ -140,6 +151,19 @@ export class TelegramWorker {
   }
 
   private async admit(update: PendingUpdate): Promise<void> {
+    if (update.spam_ban_expires_at || update.spam_ban_requested_at) {
+      this.run(update, () => this.runReply(update.chat_id, async () => {
+        if (update.spam_ban_expires_at) await this.notifySpamBan(update, update.spam_ban_expires_at);
+        else if (update.spam_ban_requested_at && Date.now() - update.spam_ban_requested_at.getTime() < 60_000) {
+          await this.applySpamBan(update);
+        }
+      }));
+      return;
+    }
+    if (await this.store.wasSpamBlocked(update)) {
+      this.sendService(update, 'banned');
+      return;
+    }
     let employee: boolean;
     let answer: string | null;
     try {
@@ -148,7 +172,7 @@ export class TelegramWorker {
         ? await this.handle(update, employee) : null);
     } catch (error) {
       if (!(error instanceof UserBannedError)) throw error;
-      this.rejectBanned(update, error.retryAfterSeconds);
+      this.sendService(update, 'banned');
       return;
     }
     const response = answer ?? (!employee ? accessDenied : null);
@@ -160,9 +184,16 @@ export class TelegramWorker {
       });
       return;
     }
+    if (update.spam_fingerprint && await this.store.evaluateSpam(update)) {
+      this.run(update, () => this.runReply(update.chat_id, () => this.applySpamBan(update)));
+      return;
+    }
 
     const { attachment, text } = update.payload;
-    let message: DeliveredMessageInput = text;
+    let message: DeliveredMessageInput = attachment || update.payload.supportAction ? text : {
+      kind: 'signal', type: telegramTextDelivery, tagName: 'telegram_message', body: text,
+      attributes: { update_id: update.update_id },
+    };
     if (attachment && update.submission_id === null) {
       const loaded = await loadAttachment(this.telegram, attachment, text);
       if ('error' in loaded) {
@@ -200,12 +231,17 @@ export class TelegramWorker {
       let followUp: string | undefined;
       let buttons: SupportButtons | undefined;
       let action: SupportAction | undefined;
+      let skip = false;
+      let conversational = false;
+      let reported = false;
       let available = true;
       let flags: ReplyFlags = { hasAnswer: false, hasClarification: false };
       try {
         const reply = await agent.read(submissionId);
-        const parsedAction = v.safeParse(supportAction, reply.data.supportAction?.at(-1));
+        const savedAction = reply.data.supportAction?.at(-1);
+        const parsedAction = v.safeParse(supportAction, savedAction);
         if (parsedAction.success) action = parsedAction.output;
+        reported = reply.data.spamReport?.includes(update.update_id) ?? false;
         const responseId = reply.metadata?.telegramResponseId;
         if (typeof responseId === 'string') deliveryId = `response:${responseId}`;
         const ragResults = reply.data.ragAnswer;
@@ -230,8 +266,19 @@ export class TelegramWorker {
             hasClarification: parsedAttachment.output.kind === 'clarify',
           };
           rich = false;
-        } else if (!replyText) {
-          replyText = renderChatReply(...(reply.data.chatAnswer ?? [])) ?? '';
+        } else {
+          const chat = v.safeParse(chatReply, reply.data.chatAnswer?.at(-1));
+          if (chat.success) {
+            skip = chat.output.kind === 'skip';
+            if (chat.output.kind === 'reply') {
+              replyText = chat.output.text;
+              conversational = true;
+              rich = false;
+            }
+          } else {
+            replyText = renderChatReply(...(reply.data.chatAnswer ?? [])) ?? '';
+            skip = !replyText && v.is(v.object({ action: v.literal('ban') }), savedAction);
+          }
         }
       } catch (error) {
         if (!(error instanceof AgentRunError)) throw error;
@@ -239,22 +286,34 @@ export class TelegramWorker {
       } finally {
         stopTyping();
       }
-      if (!replyText && !action) deliveryId = 'failure:' + await responseSubmission(submissionId);
-      const kind = replyText && available ? 'answer' : 'fallback';
-      if (!request) {
-        const receipt = await this.output.send(
-          deliveryId, update.chat_id, replyText || unavailable, kind, rich && !!replyText, replyHtml, replyImages,
-        );
-        if (kind === 'answer') await this.recordReplyTiming(submissionId, receipt);
-        return;
-      }
       await this.runReply(update.chat_id, async () => {
+        if (await this.store.wasSpamBlocked(update)) return;
+        if (reported && await this.store.evaluateSpam(update, true)) {
+          await this.applySpamBan(update);
+          return;
+        }
+        if (skip && !action) return;
+        if (!action && await responseSubmission(submissionId) !== submissionId) return;
+        if (!replyText && !action) deliveryId = 'failure:' + submissionId;
+        const kind = conversational ? 'service' : replyText && available ? 'answer' : 'fallback';
+        if (!request) {
+          const receipt = await this.output.send(
+            deliveryId, update.chat_id, replyText || unavailable, kind, rich && !!replyText, replyHtml, replyImages,
+          );
+          if (kind === 'answer') await this.recordReplyTiming(submissionId, receipt);
+          return;
+        }
         const active = await this.requests.active(update.chat_id);
         if (active?.id !== request.id) return;
         if (action) {
           await this.applyAction(update, active, action);
           return;
         }
+        if (conversational) {
+          await this.deliver(request, deliveryId, replyText);
+          return;
+        }
+        await this.requests.clearDeadline(request, update.sequence);
         const receipt = await this.deliver(request, deliveryId, replyText || unavailable, {
           sequence: update.sequence, phase: followUp ? undefined : phase,
           html: replyHtml, rich: rich && !!replyText, kind, images: replyImages, buttons: followUp ? undefined : buttons, flags,
@@ -272,21 +331,20 @@ export class TelegramWorker {
     });
   }
 
-  private rejectBanned(update: PendingUpdate, seconds: number): void {
-    this.run(update, async () => {
-      const active = await this.requests.active(update.chat_id);
-      if (active) await this.requests.close(active, active.latest_sequence, 'spam');
-      await this.output.send(`banned:${update.update_id}`, update.chat_id, bannedMessage(seconds), 'service', false);
-    });
+  private async applySpamBan(update: PendingUpdate): Promise<void> {
+    const expiresAt = await banUser(update.payload.userId);
+    await this.store.recordSpamBan(update, expiresAt);
+    await this.notifySpamBan(update, expiresAt);
+  }
+
+  private async notifySpamBan(update: PendingUpdate, expiresAt: Date): Promise<void> {
+    const seconds = Math.ceil((expiresAt.getTime() - Date.now()) / 1000);
+    if (seconds > 0) {
+      await this.output.send(`ban:${update.chat_id}:${expiresAt.getTime()}`, update.chat_id, bannedMessage(seconds), 'service', false);
+    }
   }
 
   private async applyAction(update: PendingUpdate, request: ActiveRequest, action: SupportAction): Promise<void> {
-    if (action.action === 'ban') {
-      const seconds = await banUser(update.payload.userId);
-      await this.deliver(request, `ban:${request.id}`, bannedMessage(seconds));
-      await this.requests.close(request, request.latest_sequence, 'spam');
-      return;
-    }
     if (request.latest_sequence !== update.sequence) return;
     if (await this.requests.close(request, update.sequence, action.reason)) {
       await this.output.send(`closed:${update.update_id}`, update.chat_id,
@@ -310,7 +368,6 @@ export class TelegramWorker {
   private async acceptForRequest(update: PendingUpdate): Promise<ActiveRequest | undefined> {
     const { attachment, text: message } = update.payload;
     const text = attachment ? '' : shortReply(message);
-    const thanks = isAcknowledgement(text);
     const close = isCloseRequest(text);
     const action = update.payload.supportAction;
     const current = await this.requests.active(update.chat_id);
@@ -321,7 +378,7 @@ export class TelegramWorker {
     }
     const previous = update.request_phase ?? current?.phase;
     if (action && (current?.id !== action.requestId
-      || current.latest_sequence !== (update.request_id ? update.sequence : action.sequence)
+      || (current.phase_sequence !== action.sequence && current.phase_sequence !== update.sequence)
       || (action.kind === 's'
         ? previous !== 'details' && previous !== 'handoff_confirmation'
         : action.kind === 'n' ? previous !== 'feedback'
@@ -330,10 +387,8 @@ export class TelegramWorker {
       this.sendService(update, 'chat');
       return;
     }
-    const greeting = /^(?:привет|здравствуйте|добрый день)$/u.test(text);
-    if (!current && (close || thanks || greeting)) {
-      this.sendService(update, 'chat', close ? 'У вас нет открытого обращения.'
-        : renderChatReply(thanks ? 'thanks' : 'greeting'));
+    if ((!current || current.conversation_only) && close) {
+      this.sendService(update, 'chat', 'У вас нет открытого обращения.');
       return;
     }
     const request = await this.requests.pin(update, this.instanceId(Number(update.chat_id)));
@@ -349,12 +404,11 @@ export class TelegramWorker {
     const declinedHandoff = confirmingHandoff && /^(?:нет|нет,? спасибо)$/u.test(text);
     const yes = (markingSolved || confirmingClose) && /^(?:да|да,? закрыть)$/u.test(text);
     const no = (markingSolved || confirmingClose) && /^(?:нет|нет,? (?:нужна помощь|продолжим))$/u.test(text);
-    const answered = request.phase === 'answer' || markingSolved;
     const historyText = attachment ? [message, `[${attachmentSummary(attachment)}]`].filter(Boolean).join('\n')
-      : thanks || close || yes || no || handoff || declinedHandoff || action ? message : null;
+      : close || yes || no || handoff || declinedHandoff || action ? message : null;
     await this.requests.append(request, `user:${update.update_id}`, 'user', update.received_at, historyText, update.sequence);
     const reason = close || (yes && confirmingClose) ? 'user_closed'
-      : handoff ? 'operator_requested' : yes ? 'confirmed' : thanks && answered ? 'thanks' : undefined;
+      : handoff ? 'operator_requested' : yes ? 'confirmed' : undefined;
     if (reason) {
       const draft = reason === 'operator_requested' ? {
         title: 'Требуется помощь специалиста',
@@ -364,13 +418,11 @@ export class TelegramWorker {
       this.sendService(update, 'closed', closed ? closeAcknowledgement(reason) : undefined);
       return;
     }
-    await this.requests.clearDeadline(request, update.sequence);
-    if (thanks || no || declinedHandoff) {
-      const prompt = thanks
-        ? { text: closeQuestion, phase: 'close_confirmation', buttons: 'close' } as const
-        : declinedHandoff
-          ? { text: 'Хорошо. Если появятся новые детали, напишите.', phase: 'clarification', buttons: undefined } as const
-          : { text: detailsQuestion, phase: 'details', buttons: 'operator' } as const;
+    if (no || declinedHandoff) {
+      await this.requests.clearDeadline(request, update.sequence);
+      const prompt = declinedHandoff
+        ? { text: 'Хорошо. Если появятся новые детали, напишите.', phase: 'clarification', buttons: undefined } as const
+        : { text: detailsQuestion, phase: 'details', buttons: 'operator' } as const;
       this.run(update, () => this.runReply(update.chat_id, async () => {
         await this.deliver(request, `prompt:${update.update_id}`, prompt.text, {
           sequence: update.sequence, phase: prompt.phase, buttons: prompt.buttons,
@@ -421,7 +473,9 @@ export class TelegramWorker {
       void this.runReply(request.chat_id, async () => {
         const [due] = await this.requests.due(request.id);
         if (!due) return;
-        if (due.phase === 'answer') {
+        if (due.conversation_only) {
+          await this.requests.expireConversation(due);
+        } else if (due.phase === 'answer') {
           await this.deliver(due, `feedback:${due.id}:${due.latest_sequence}`, feedbackQuestion, {
             sequence: due.latest_sequence, phase: 'feedback', buttons: 'feedback',
           });

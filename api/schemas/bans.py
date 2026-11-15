@@ -13,6 +13,7 @@ class BanRead(BaseModel):
     telegram_id: int
     ban_level: int = Field(ge=1, le=3)
     retry_after_seconds: int = Field(gt=0, le=600)
+    expires_at_ms: int = Field(gt=0)
 
 
 class UserBannedRead(BaseModel):

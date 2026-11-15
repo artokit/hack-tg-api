@@ -13,7 +13,9 @@ export interface ActiveRequest {
   chat_id: string;
   instance_id: string;
   latest_sequence: string;
+  phase_sequence: string;
   phase: RequestPhase;
+  conversation_only: boolean;
 }
 
 interface Finalization {
@@ -26,7 +28,7 @@ export class TelegramRequests {
 
   async active(chatId: string): Promise<ActiveRequest | undefined> {
     const result = await this.pool.query<ActiveRequest>(`
-      SELECT id, chat_id, instance_id, latest_sequence, phase FROM bars_telegram_requests
+      SELECT id, chat_id, instance_id, latest_sequence, phase_sequence, phase, conversation_only FROM bars_telegram_requests
       WHERE bot_id = $1 AND chat_id = $2 AND closed_at IS NULL
     `, [this.botId, chatId]);
     return result.rows[0];
@@ -43,13 +45,13 @@ export class TelegramRequests {
     const result = await this.pool.query<ActiveRequest>(`
       WITH current_request AS (
         INSERT INTO bars_telegram_requests (
-          id, bot_id, chat_id, instance_id, opened_at, phase, latest_sequence, tracks_model_cost,
-          tracks_response_metrics, kb_search_count
+          id, bot_id, chat_id, instance_id, opened_at, phase, latest_sequence, phase_sequence, tracks_model_cost,
+          tracks_response_metrics, kb_search_count, conversation_only, due_at
         )
-        VALUES ($1, $2, $3, $4, $5, 'technical', $6, true, true, 0)
+        VALUES ($1, $2, $3, $4, $5, 'technical', $6, $6, true, true, 0, true, clock_timestamp() + interval '5 minutes')
         ON CONFLICT (bot_id, chat_id) WHERE closed_at IS NULL DO UPDATE
         SET latest_sequence = greatest(bars_telegram_requests.latest_sequence, EXCLUDED.latest_sequence)
-        RETURNING id, chat_id, instance_id, latest_sequence, phase, phase_sent_at
+        RETURNING id, chat_id, instance_id, latest_sequence, phase_sequence, phase, phase_sent_at, conversation_only
       ), pinned AS (
         UPDATE bars_telegram_updates
         SET request_id = current_request.id, instance_id = current_request.instance_id,
@@ -60,7 +62,8 @@ export class TelegramRequests {
         FROM current_request WHERE sequence = $6
         RETURNING request_phase AS phase
       )
-      SELECT id, chat_id, instance_id, latest_sequence, pinned.phase FROM current_request CROSS JOIN pinned
+      SELECT id, chat_id, instance_id, latest_sequence, phase_sequence, pinned.phase, conversation_only
+      FROM current_request CROSS JOIN pinned
     `, [id, this.botId, update.chat_id, `${instancePrefix}:${id}`, update.received_at, update.sequence]);
     return result.rows[0];
   }
@@ -85,21 +88,22 @@ export class TelegramRequests {
   ): Promise<void> {
     const seconds = phase === 'answer' ? 120 : 300;
     await this.pool.query(`
-      UPDATE bars_telegram_requests SET phase = $4, due_at = $5, phase_sent_at = $6
-      WHERE id = $1 AND bot_id = $2 AND latest_sequence = $3 AND closed_at IS NULL
+      UPDATE bars_telegram_requests SET phase = $4, due_at = $5, phase_sent_at = $6, phase_sequence = $3
+      WHERE id = $1 AND bot_id = $2 AND phase_sequence <= $3 AND closed_at IS NULL
     `, [request.id, this.botId, sequence, phase, new Date(sentAt.getTime() + seconds * 1000), sentAt]);
   }
 
   async clearDeadline(request: ActiveRequest, sequence: string): Promise<void> {
     await this.pool.query(`
-      UPDATE bars_telegram_requests SET phase = 'technical', due_at = NULL
-      WHERE id = $1 AND bot_id = $2 AND latest_sequence = $3 AND closed_at IS NULL
+      UPDATE bars_telegram_requests SET phase = 'technical', due_at = NULL, phase_sequence = $3, conversation_only = false
+      WHERE id = $1 AND bot_id = $2 AND phase_sequence <= $3 AND closed_at IS NULL
     `, [request.id, this.botId, sequence]);
   }
 
   async due(requestId?: string): Promise<ActiveRequest[]> {
     const result = await this.pool.query<ActiveRequest>(`
-      SELECT id, chat_id, instance_id, latest_sequence, phase FROM bars_telegram_requests AS request
+      SELECT id, chat_id, instance_id, latest_sequence, phase_sequence, phase, conversation_only
+      FROM bars_telegram_requests AS request
       WHERE bot_id = $1 AND closed_at IS NULL AND due_at <= clock_timestamp()
         AND ($2::uuid IS NULL OR id = $2)
         AND NOT EXISTS (
@@ -118,6 +122,17 @@ export class TelegramRequests {
       WHERE id = $1 AND bot_id = $2 AND latest_sequence = $3 AND closed_at IS NOT NULL
     `, [update.request_id, this.botId, update.sequence]);
     return result.rows[0]?.reason;
+  }
+
+  async expireConversation(request: ActiveRequest): Promise<void> {
+    await this.pool.query(`
+      UPDATE bars_telegram_requests AS request SET closed_at = clock_timestamp(), due_at = NULL
+      WHERE request.id = $1 AND request.bot_id = $2 AND request.closed_at IS NULL AND request.conversation_only
+        AND request.due_at <= clock_timestamp() AND NOT EXISTS (
+          SELECT 1 FROM bars_telegram_updates AS pending
+          WHERE pending.bot_id = $2 AND pending.chat_id = request.chat_id AND pending.finished_at IS NULL
+        )
+    `, [request.id, this.botId]);
   }
 
   async close(

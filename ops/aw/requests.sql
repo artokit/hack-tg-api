@@ -35,6 +35,9 @@ WITH event_flags AS (
     FROM public.support_requests AS saved
     FULL JOIN public.bars_telegram_requests AS runtime ON runtime.id = saved.id
     LEFT JOIN event_counts AS events ON events.request_id = coalesce(saved.id, runtime.id)
+    WHERE saved.id IS NOT NULL OR runtime.outcome IS NOT NULL
+        OR NOT coalesce((to_jsonb(runtime)->>'conversation_only')::boolean, false)
+        OR coalesce((to_jsonb(runtime)->>'kb_search_count')::integer, 0) > 0
 ), outcomes AS (
     SELECT
         *,

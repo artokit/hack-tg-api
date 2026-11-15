@@ -10,16 +10,33 @@ const replies = {
 };
 
 const replyKind = v.picklist(['greeting', 'thanks', 'farewell', 'capabilities', 'coding_task']);
-type ReplyKind = v.InferOutput<typeof replyKind>;
+const chatText = v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(500));
+export const chatReply = v.variant('kind', [
+  v.object({ kind: v.literal('reply'), text: chatText }),
+  v.object({ kind: v.literal('skip') }),
+]);
+type ChatReply = v.InferOutput<typeof chatReply>;
 
-export function chatTool(write: (kind: ReplyKind) => void) {
+export function chatTool(write: (reply: ChatReply) => void) {
   return defineTool({
     name: 'reply_in_chat',
-    description: 'Ответь на отдельное приветствие, благодарность, прощание или вопрос о твоих возможностях. При новом вопросе или возражении выбери подходящий инструмент вместо благодарности. Для просьбы написать код или решить задачу по программированию выбери coding_task.',
-    input: v.object({ kind: replyKind }),
+    description: 'Коротко ответь своими словами на приветствие, благодарность, прощание, проверку связи или вопрос о своих возможностях. Для вопроса по работе используй поиск по документации.',
+    input: v.object({ text: chatText }),
     run({ data }) {
-      write(data.kind);
-      return { output: replies[data.kind], terminate: true };
+      write({ kind: 'reply', text: data.text });
+      return { output: data.text, terminate: true };
+    },
+  });
+}
+
+export function skipReplyTool(write: (reply: ChatReply) => void) {
+  return defineTool({
+    name: 'skip_reply',
+    description: 'Заверши обработку без сообщения в чат, если это отдельная благодарность, бессодержательная реплика или повтор уже обработанного сообщения без новых деталей.',
+    input: v.object({}),
+    run() {
+      write({ kind: 'skip' });
+      return { output: 'Сообщение в чат не отправляется.', terminate: true };
     },
   });
 }
@@ -39,17 +56,6 @@ export function attachmentReplyTool(write: (reply: v.InferOutput<typeof attachme
       return { output: data.text, terminate: true };
     },
   });
-}
-
-const gratitude = '(?:спасибо(?: большое| огромное)?|большое спасибо|огромное спасибо|благодарю|thanks|thank you)';
-const acknowledgement = '(?:понял[аи]?|понятно|разобрал(?:ся|ась)|вс[её] (?:понятно|получилось|работает))';
-const shortAcknowledgement = new RegExp(
-  `^(?:${gratitude}(?:[,.!\\s]+${acknowledgement})?|(?:${acknowledgement}|да|ок(?:ей)?)(?:[,.!\\s]+${gratitude})|${acknowledgement})$`,
-  'u',
-);
-
-export function isAcknowledgement(text: string): boolean {
-  return shortAcknowledgement.test(text);
 }
 
 const closeRequest = '(?:закрой(?:те)?|закрывай(?:те)?|закрыть|закроем|заверши(?:те)?|завершить)(?:\\s+(?:это|мо[её]|текущее))?\\s+(?:обращение|заявку|вопрос)';
