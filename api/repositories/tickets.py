@@ -28,9 +28,6 @@ class TicketRepository:
             .limit(2)
         )).one_or_none()
 
-    async def get_for_update(self, ticket_id: int) -> Ticket | None:
-        return await self._session.get(Ticket, ticket_id, with_for_update=True)
-
     async def create(self, ticket: Ticket) -> Ticket:
         self._session.add(ticket)
         try:

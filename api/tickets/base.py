@@ -17,14 +17,6 @@ class TicketCreated:
     external_key: str
 
 
-@dataclass(frozen=True)
-class TicketAttachment:
-    issue_id_or_key: str
-    comment_id: str
-    filename: str
-    public: bool
-
-
 class TicketSystem(ABC):
     """Контракт тикет-системы. Все реализации (JSM, Zendesk, Usedesk) обязаны его поддерживать."""
 
@@ -34,19 +26,4 @@ class TicketSystem(ABC):
 
     @abstractmethod
     async def find_by_reference(self, reference: str) -> TicketCreated | None:
-        ...
-
-    @abstractmethod
-    async def has_attachment(self, issue_id_or_key: str, filename: str) -> bool:
-        ...
-
-    @abstractmethod
-    async def attach_file(
-        self,
-        issue_id_or_key: str,
-        filename: str,
-        content: bytes,
-        content_type: str,
-        public: bool,
-    ) -> TicketAttachment:
         ...
