@@ -64,8 +64,12 @@ export default {
         finished_at timestamptz,
         UNIQUE (bot_id, update_id)
       );
+      ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS received_at timestamptz;
+      ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS processing_at timestamptz;
       CREATE INDEX IF NOT EXISTS bars_telegram_pending_updates
         ON bars_telegram_updates (bot_id, sequence) WHERE finished_at IS NULL;
+      CREATE INDEX IF NOT EXISTS bars_telegram_update_submission
+        ON bars_telegram_updates (bot_id, submission_id) WHERE submission_id IS NOT NULL;
 
       CREATE TABLE IF NOT EXISTS bars_telegram_dialogs (
         bot_id text NOT NULL,
@@ -80,6 +84,7 @@ export default {
         status text NOT NULL CHECK (status IN ('sending', 'sent', 'failed', 'unknown')),
         PRIMARY KEY (bot_id, delivery_id)
       );
+      ALTER TABLE bars_telegram_deliveries ADD COLUMN IF NOT EXISTS kind text;
 
       CREATE TABLE IF NOT EXISTS bars_telegram_sessions (
         bot_id text NOT NULL,
@@ -90,8 +95,6 @@ export default {
 
       ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS request_id uuid;
       ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS request_phase text;
-      ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS received_at
-        timestamptz NOT NULL DEFAULT clock_timestamp();
       ALTER TABLE bars_telegram_deliveries ADD COLUMN IF NOT EXISTS sent_at timestamptz;
 
       CREATE TABLE IF NOT EXISTS bars_telegram_requests (

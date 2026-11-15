@@ -7,12 +7,13 @@ import { Bars } from './agents/bars.js';
 import { SupportRequestFinalizer } from './agents/support-request-finalizer.js';
 import { responseSubmission } from './db.js';
 import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employees-api.js';
+import { recordDelivery, recordReplyDuration } from './telemetry.js';
 import { renderChatReply } from './telegram-chat.js';
 import { type ClosedRequest, type CloseReason, isOperatorRequest, type SupportHandoff, supportHandoff, supportRequestClosed } from './support-request.js';
 import { renderRag, supportedRagReply, supportRagReply } from './telegram-rag.js';
-import { TelegramOutput } from './telegram-output.js';
+import { type DeliveryResult, TelegramOutput } from './telegram-output.js';
 import { type ActiveRequest, type RequestPhase, TelegramRequests } from './telegram-requests.js';
-import { type PendingUpdate, resetAnswer, TelegramStore } from './telegram-store.js';
+import { type DeliveryKind, type PendingUpdate, resetAnswer, TelegramStore } from './telegram-store.js';
 
 const unavailable = 'Сейчас не получается ответить. Попробуй ещё раз чуть позже.';
 const feedbackQuestion = 'Удалось решить вопрос?';
@@ -89,7 +90,7 @@ export class TelegramWorker {
     this.scanning = true;
     try {
       if (!this.recovered) {
-        await this.store.recoverDeliveries();
+        for (const kind of await this.store.recoverDeliveries()) recordDelivery(kind, 'unknown');
         this.recovered = true;
       }
       await this.processDeadlines();
@@ -103,6 +104,7 @@ export class TelegramWorker {
         if (this.processing.has(update.sequence) || this.replies.has(update.chat_id) || blockedChats.has(update.chat_id)) continue;
         this.processing.add(update.sequence);
         try {
+          await this.store.startProcessing(update.sequence);
           await this.runReply(update.chat_id, () => this.admit(update));
         } catch (error) {
           this.processing.delete(update.sequence);
@@ -131,7 +133,7 @@ export class TelegramWorker {
       }
       this.run(update, async () => {
         if (response) {
-          await this.output.send(`command:${update.update_id}`, update.chat_id, response, false);
+          await this.output.send(`command:${update.update_id}`, update.chat_id, response, 'service', false);
         }
       });
       return;
@@ -162,6 +164,7 @@ export class TelegramWorker {
       let phase: RequestPhase = 'technical';
       let handoff: SupportHandoff | undefined;
       let supported: ReturnType<typeof supportedRagReply>;
+      let available = true;
       try {
         const reply = await agent.read(submissionId);
         const responseId = reply.metadata?.telegramResponseId;
@@ -185,6 +188,7 @@ export class TelegramWorker {
           replyText = rendered.text;
           replyHtml = rendered.html;
           phase = rendered.phase;
+          available = rendered.available;
         } else if (!replyText) {
           replyText = renderChatReply(...(reply.data.chatAnswer ?? [])) ?? '';
           if (replyText) phase = 'answer';
@@ -195,12 +199,13 @@ export class TelegramWorker {
       } finally {
         stopTyping();
       }
+      if (!replyText) deliveryId = 'failure:' + await responseSubmission(submissionId);
+      const kind = replyText && available ? 'answer' : 'fallback';
       if (!request) {
-        if (!replyText) deliveryId = 'failure:' + await responseSubmission(submissionId);
-        await this.output.send(deliveryId, update.chat_id, replyText || unavailable, !!replyText, replyHtml);
+        const receipt = await this.output.send(deliveryId, update.chat_id, replyText || unavailable, kind, !!replyText, replyHtml);
+        if (kind === 'answer') await this.recordReplyTiming(submissionId, receipt);
         return;
       }
-      if (!replyText) deliveryId = 'failure:' + await responseSubmission(submissionId);
       await this.runReply(update.chat_id, async () => {
         const active = await this.requests.active(update.chat_id);
         if (active?.id !== request.id) return;
@@ -214,11 +219,24 @@ export class TelegramWorker {
           await this.requests.close(request, update.sequence, reason, draft);
           return;
         }
-        await this.deliver(request, deliveryId, replyText || unavailable, {
-          sequence: update.sequence, phase, html: replyHtml, rich: !!replyText,
+        const receipt = await this.deliver(request, deliveryId, replyText || unavailable, {
+          sequence: update.sequence, phase, html: replyHtml, rich: !!replyText, kind,
         });
+        if (kind === 'answer') await this.recordReplyTiming(submissionId, receipt);
       });
     });
+  }
+
+  private async recordReplyTiming(submissionId: string, receipt: DeliveryResult): Promise<void> {
+    if (receipt.status !== 'sent' || receipt.startedAt === undefined || receipt.finishedAt === undefined) return;
+    try {
+      const timing = await this.store.replyTiming(await responseSubmission(submissionId));
+      if (timing?.received_at && timing.processing_at) {
+        recordReplyDuration(timing.received_at, timing.processing_at, receipt.startedAt, receipt.finishedAt);
+      }
+    } catch (error) {
+      console.warn('Telegram timing unavailable', error instanceof Error ? error.name : 'Error');
+    }
   }
 
   private async acceptForRequest(update: PendingUpdate): Promise<ActiveRequest | undefined> {
@@ -228,7 +246,7 @@ export class TelegramWorker {
     if (!current && !update.request_id && (thanks || /^(?:привет|здравствуйте|добрый день)$/u.test(text))) {
       this.run(update, async () => {
         await this.output.send(
-          `chat:${update.update_id}`, update.chat_id, renderChatReply(thanks ? 'thanks' : 'greeting')!, false,
+          `chat:${update.update_id}`, update.chat_id, renderChatReply(thanks ? 'thanks' : 'greeting')!, 'service', false,
         );
       });
       return;
@@ -247,7 +265,7 @@ export class TelegramWorker {
       await this.requests.close(request, update.sequence, thanks ? 'thanks' : 'confirmed');
       this.run(update, async () => {
         await this.output.send(
-          `closed:${update.update_id}`, update.chat_id, thanks ? 'Пожалуйста!' : 'Хорошо, обращение закрыто.', false,
+          `closed:${update.update_id}`, update.chat_id, thanks ? 'Пожалуйста!' : 'Хорошо, обращение закрыто.', 'service', false,
         );
       });
       return;
@@ -269,17 +287,18 @@ export class TelegramWorker {
 
   private async deliver(
     request: ActiveRequest, id: string, text: string,
-    next?: { sequence?: string; phase?: RequestPhase; rich?: boolean; html?: string },
-  ): Promise<void> {
-    const receipt = await this.output.send(id, request.chat_id, text, next?.rich ?? false, next?.html);
+    next?: { sequence?: string; phase?: RequestPhase; rich?: boolean; html?: string; kind?: DeliveryKind },
+  ): Promise<DeliveryResult> {
+    const receipt = await this.output.send(id, request.chat_id, text, next?.kind ?? 'service', next?.rich ?? false, next?.html);
     if (receipt.status !== 'sent' || !receipt.sent_at) {
       if (next?.sequence) await this.requests.close(request, next.sequence, 'delivery_failed');
-      return;
+      return receipt;
     }
     await this.requests.append(request, id, 'assistant', receipt.sent_at, text);
     if (next?.sequence && next.phase) {
       await this.requests.advance(request, next.sequence, next.phase, receipt.sent_at);
     }
+    return receipt;
   }
 
   private async processDeadlines(): Promise<void> {

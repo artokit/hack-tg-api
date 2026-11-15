@@ -35,14 +35,6 @@ class SupportRequestRead(SupportRequestCreate):
     model_config = ConfigDict(from_attributes=True)
 
 
-class SupportTicketCreate(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
-
-    title: str = Field(min_length=5, max_length=255)
-    description: str = Field(min_length=1)
-    conversation: str = Field(min_length=1)
-
-
 class SupportTicketRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

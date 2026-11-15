@@ -4,6 +4,35 @@ Flue принимает Telegram webhook, вызывает OpenAI-совмест
 
 ## Запуск
 
+### Локальная разработка
+
+`docker-compose-dev.yml` поднимает PostgreSQL 17 с базой `hackathon`, Redis, Flue, файловый сервис, отдельную БД файлового сервиса и MinIO. API запускается локально. Flue обращается к нему через `host.docker.internal:8000` (порт задаётся через `API_PORT`).
+
+В корневом `.env` задайте `FILE_DB_PASSWORD` и `MINIO_ROOT_PASSWORD` разными случайными значениями от 32 символов. Остальные настройки файлового сервиса доступны в `.env.example`.
+
+Для Flue в корневом `.env` также заполните `BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET_TOKEN`, `BOT_API_TOKEN`, `CHAT_BASE_URL`, `CHAT_MODEL` и при необходимости `CHAT_API_KEY`. Значение `BOT_API_TOKEN` должно совпадать с настройкой локального API. Если модель работает на этом же компьютере, используйте в `CHAT_BASE_URL` адрес `host.docker.internal`, не `localhost` и не адрес FastAPI.
+
+Из корня проекта:
+
+```powershell
+docker compose -f docker-compose-dev.yml up -d --build --wait
+```
+
+Для локального API в `api/.env` задайте `DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/hackathon` и `REDIS_URL=redis://127.0.0.1:6379/0`, а также секреты приложения. Если меняли `POSTGRES_PORT` или `REDIS_PORT`, укажите те же порты в URL. Переменные текущего терминала имеют приоритет над `.env`.
+
+```powershell
+cd api
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m uvicorn main:app --host 0.0.0.0 --reload
+```
+
+Адреса по умолчанию: API — `http://127.0.0.1:8000/docs`, Flue — `http://127.0.0.1:3000/health`, файловый сервис — `http://127.0.0.1:8080/file-service/docs`, MinIO Console — `http://127.0.0.1:9001`. Миграции файлового сервиса и создание bucket выполняются при старте его контейнера; миграции API применяются командой выше. API слушает `0.0.0.0` для доступа из контейнера Flue; ограничьте входящий доступ средствами брандмауэра.
+
+Не запускайте dev-compose и полный Compose одновременно на одинаковых портах. Их основные PostgreSQL используют разные версии, базы и volumes; данные автоматически не переносятся. Не меняйте версию PostgreSQL для существующего volume и не удаляйте volumes для перезапуска.
+
+### Полный запуск в Docker
+
 1. Скопируйте `.env.example` в `.env`. Укажите токен бота в `BOT_TOKEN`, произвольный независимый `TELEGRAM_WEBHOOK_SECRET_TOKEN` и настройки модели. `CHAT_BASE_URL` — базовый URL совместимого API, например `https://provider.example/v1`. При работе без авторизации оставьте `CHAT_API_KEY` пустым.
 2. Выполните `docker compose up -d --build --wait`. FastAPI применит миграции, Flue создаст таблицы агента и обработки Telegram. Новый volume называется `bars-hackathon_postgres_flue_data`. Volume прежнего Python-бота можно сохранить для отката.
 3. Проверьте `http://127.0.0.1:3000/health` с хоста. FastAPI доступен внутри Compose по адресу `http://api:8000`. Для второго экземпляра используйте другое имя проекта Compose, другие хостовые порты и отдельный тестовый токен.
@@ -43,6 +72,79 @@ Bucket по умолчанию приватный. Текущий file-service �
 ## Документация API
 
 Swagger UI доступен на `http://127.0.0.1:8000/docs`, схема OpenAPI — на `http://127.0.0.1:8000/openapi.json`. В Swagger можно посмотреть и вызвать ручки входа, сотрудников, приглашений и проверки состояния API. Порт API в Docker Compose можно изменить через `API_PORT` в `.env`; доступ с хоста открыт только на `127.0.0.1`.
+
+## Техническая аналитика
+
+Обычный `docker compose up -d --build` запускает OpenTelemetry Collector, Prometheus и Tempo. Flue отправляет трассы и метрики в Collector, FastAPI читает агрегаты из Prometheus. Сервисы телеметрии доступны внутри сети Compose. Метрики хранятся 14 дней, трассы — 7 дней. Трассировка Flue использует `content: false`.
+
+Фронт читает `GET /analytics/technical?range=24h` с `Authorization: Bearer <access_token>`. Доступные периоды — `1h`, `24h` (по умолчанию) и `7d`. Границы периода в UTC, все длительности в миллисекундах. Ручка обновляется по мере выгрузки метрик, каждые 15 секунд.
+
+```json
+{
+  "range": "24h",
+  "from_at": "2026-11-14T10:00:00Z",
+  "to_at": "2026-11-15T10:00:00Z",
+  "tokens": {
+    "chat": {"input": 1200, "output": 90, "by_model": [{"model": "example", "input": 1200, "output": 90}]},
+    "document_import": {"input": 0, "output": 0, "by_model": []}
+  },
+  "response_time": {"sample_count": 10, "mean_ms": 1200, "p95_ms": 2100},
+  "stages": [
+    {"stage": "queue", "mean_ms": 20},
+    {"stage": "preparation", "mean_ms": 1100},
+    {"stage": "delivery", "mean_ms": 80}
+  ],
+  "agent_breakdown": [
+    {"kind": "model", "name": "example", "mean_ms": 490},
+    {"kind": "tool", "name": "answer_from_docs", "mean_ms": 610},
+    {"kind": "rag", "name": "search", "mean_ms": 120},
+    {"kind": "rag", "name": "compose", "mean_ms": 470}
+  ],
+  "delivery": {
+    "answer": {"sent": 10, "failed": 1, "unknown": 0},
+    "fallback": {"sent": 1, "failed": 0, "unknown": 0},
+    "service": {"sent": 1, "failed": 0, "unknown": 0}
+  }
+}
+```
+
+Три `stages` складываются в длительность ответа. `agent_breakdown` показывает среднее на один вызов модели, инструмента или шага RAG. Эти замеры могут перекрываться. Расход берётся из модельных вызовов Flue, входные токены включают токены кэша. p95 оценивается по гистограмме Prometheus. При пустой выборке длительности равны `null`, а счётчики — `0`. При недоступности Prometheus API возвращает `503`.
+
+## Вложения к заявкам Jira
+
+Настройки Jira задаются в `api/.env` для локального API и в корневом `.env` для полного Compose.
+
+```dotenv
+JIRA_BASE_URL=https://your-company.atlassian.net
+JIRA_EMAIL=integration@example.com
+JIRA_API_TOKEN=
+JSM_SERVICE_DESK_ID=1
+JSM_REQUEST_TYPE_ID=1
+```
+
+Замените адрес, email и ID на свои значения. Корневой `.env` имеет приоритет над `api/.env`, переменные окружения имеют приоритет над файлами. После изменения настроек перезапустите локальный API или выполните `docker compose up -d --wait api` для полного Compose.
+
+Для Jira Cloud API-токен создаётся в аккаунте Atlassian: https://id.atlassian.com/manage-profile/security/api-tokens → Create API token → имя и срок действия → Create → Copy. `JIRA_EMAIL` должен принадлежать владельцу токена. Для адреса `https://your-company.atlassian.net` используется токен без scopes. Для токена со scopes нужен `JIRA_BASE_URL=https://api.atlassian.com/ex/jira/<cloudId>` и права на чтение заявок, создание заявок и прикрепление файлов. Права учётной записи на проект JSM также обязательны. Это настройка Jira Cloud; Jira Data Center использует другой способ выдачи и применения токенов.
+
+Для доступа к ручке вложений отправляйте `X-Bot-Token` со значением `BOT_API_TOKEN`. При обращении к Jira сервер использует `JIRA_EMAIL` и `JIRA_API_TOKEN` для Basic Auth.
+
+`POST /private/tickets/{ticket_id}/attachments` прикрепляет один файл к заявке, созданной через `POST /tickets`. В адресе передаётся локальный `tickets.id`, API сам находит заявку Jira по сохранённым `external_id`/`external_key`.
+
+`POST /tickets` при создании заявки сохраняет из ответа Jira внешний ID (`issueId`) и ключ (`issueKey`), возвращает их в полях `external_id` и `external_key`. Заявки, созданные до этой правки, полей не имеют: для них вложения вернут `400`, нужна новая заявка.
+
+При передаче Telegram-обращения агент отправляет `support_request_id` и `X-Bot-Token` в `POST /tickets`. API сохраняет локальный тикет и ставит создание в Jira в очередь. Агент получает локальный ID и статус через `GET /private/support-requests/{request_id}/ticket`, а после появления ключа Jira отправляет `conversation-<request_id>.txt` в ручку вложений.
+
+В полном Compose Flue обращается к ручке по адресу `http://api:8000/private/tickets/{ticket_id}/attachments`. На сервере Nginx блокирует внешние запросы к `/private/`.
+
+Тело запроса — `multipart/form-data`: обязательное поле `file` и необязательное `public` (по умолчанию `false`, вложение доступно только сотрудникам поддержки). Для внутреннего вложения учётной записи интеграции нужны права агента JSM. `public=true` делает вложение доступным клиенту. Размер файла — от 1 байта до 10 МиБ; ограничения самой Jira также применяются.
+
+```powershell
+curl.exe -X POST "http://127.0.0.1:8000/private/tickets/2/attachments" -H "X-Bot-Token: $env:BOT_API_TOKEN" -F "file=@conversation.txt" -F "public=false"
+```
+
+При успехе API возвращает `201` с полями `issue_id_or_key` (ключ заявки Jira), `comment_id`, `filename`, `public`. Ошибки: `400` — некорректный или пустой файл, отказ Jira по входным данным или у заявки нет привязки к Jira; `401` — отсутствует или неверен `X-Bot-Token`; `404` — заявки нет в нашей БД либо заявка/сервис-деск не найдены в Jira; `413` — превышение размера; `422` — неверный ID либо формат формы; `502` — транспортная ошибка, некорректный ответ или другая ошибка Jira.
+
+Эндпоинт не создаёт тикет и не меняет локальную БД. Повторная успешная отправка добавляет новое вложение. При тайм-ауте результат может быть неизвестен: перед повтором проверьте вложения в Jira.
 
 ## Confluence
 
@@ -145,7 +247,7 @@ PATCH принимает три обязательных nullable-поля: `use
 
 После `/start invite_<id>` или `/start <id>` бот сразу вызывает `POST /private/invites/{id}/accept`, передавая `telegram_id`, `username`, `first_name` и `last_name` из данных Telegram; отсутствующие значения передаются как `null`. Сотрудник создаётся сразу с `is_parsed: true`. Вводить имя и фамилию не нужно. При `201` бот подтверждает доступ. Уже добавленный сотрудник получает подтверждение без повторного использования инвайта. При ошибке активации бот сообщает об отказе.
 
-На каждом сообщении бот обращается к `GET /private/employees/by-telegram-id/{telegram_id}`. Он передаёт `X-Bot-Token` во все приватные ручки. Запросы к агенту доступны только действующим сотрудникам.
+На каждом сообщении бот обращается к `GET /private/employees/by-telegram-id/{telegram_id}`. Он передаёт `X-Bot-Token` в приватные ручки сотрудников, приглашений и вложений основного API. Запросы к агенту доступны только действующим сотрудникам.
 
 ФИ из персонального приглашения имеет приоритет над данными Telegram. После создания сотрудника число использований уменьшается; последнее использование удаляет приглашение. Создание сотрудника и списание выполняются отдельными сохранениями без общей транзакции и блокировок: при параллельных запросах или сбое между сохранениями возможна рассинхронизация.
 
@@ -179,6 +281,9 @@ Invoke-RestMethod "$telegramApi/getWebhookInfo"
 
 После проверки остановите прежний polling основного бота и зарегистрируйте webhook для его токена. Для отката остановите Flue, вызовите `deleteWebhook` с `drop_pending_updates=false` и запустите предыдущую версию с её БД. Telegram позволяет использовать один способ получения апдейтов на токен.
 
+## Analytic Workspace (AW)
+
+Для проверки подключения AW подготовлен изолированный mock-источник в PostgreSQL: миграция `0009`, явная загрузка и очистка тестовых данных, отдельный пользователь на чтение представления. Реальные метрики и экспорт событий Flue пока не подключены. Инструкция: [ops/aw/README.md](ops/aw/README.md).
 ## База документации
 
 Очередь RAG различает источники `file`, `url` и `confluence`. Для файла оригинал

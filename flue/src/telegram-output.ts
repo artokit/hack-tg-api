@@ -1,7 +1,10 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { Api, GrammyError } from 'grammy';
 
-import type { DeliveryReceipt, TelegramStore } from './telegram-store.js';
+import { recordDelivery } from './telemetry.js';
+import type { DeliveryKind, DeliveryReceipt, DeliveryStatus, TelegramStore } from './telegram-store.js';
+
+export type DeliveryResult = DeliveryReceipt & { startedAt?: number; finishedAt?: number };
 
 export function splitReply(text: string): string[] {
   const parts: string[] = [];
@@ -69,27 +72,34 @@ export class TelegramOutput {
   }
 
   async send(
-    id: string, chatId: string, text: string, markdown: boolean, html?: string,
-  ): Promise<DeliveryReceipt> {
-    if (!await this.store.claimDelivery(id)) return this.store.delivery(id);
-    let status: 'sent' | 'failed' | 'unknown';
+    id: string, chatId: string, text: string, kind: DeliveryKind, markdown: boolean, html?: string,
+  ): Promise<DeliveryResult> {
+    if (!await this.store.claimDelivery(id, kind)) return this.store.delivery(id);
+    const startedAt = Date.now();
+    let status: DeliveryStatus = 'sent';
     try {
-      if (html || markdown) {
-        try {
-          await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }));
-          return await this.store.recordDelivery(id, 'sent');
-        } catch (error) {
-          if (!(error instanceof GrammyError) || error.error_code !== 400) throw error;
-        }
-      }
-      for (const part of splitReply(text)) {
-        await withRateLimit(() => this.client.sendMessage(chatId, part));
-      }
-      status = 'sent';
+      await this.sendText(chatId, text, markdown, html);
     } catch (error) {
       status = error instanceof GrammyError && error.error_code < 500 ? 'failed' : 'unknown';
       console.warn('Telegram delivery', status, id, error instanceof Error ? error.name : 'Error');
     }
-    return this.store.recordDelivery(id, status);
+    const finishedAt = Date.now();
+    const receipt = await this.store.recordDelivery(id, status);
+    recordDelivery(kind, status);
+    return { ...receipt, startedAt, finishedAt };
+  }
+
+  private async sendText(chatId: string, text: string, markdown: boolean, html?: string): Promise<void> {
+    if (html || markdown) {
+      try {
+        await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }));
+        return;
+      } catch (error) {
+        if (!(error instanceof GrammyError) || error.error_code !== 400) throw error;
+      }
+    }
+    for (const part of splitReply(text)) {
+      await withRateLimit(() => this.client.sendMessage(chatId, part));
+    }
   }
 }

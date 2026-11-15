@@ -2,8 +2,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "0014"
-down_revision = "0013"
+revision = "0016"
+down_revision = "0015"
 branch_labels = None
 depends_on = None
 
@@ -25,15 +25,13 @@ def upgrade() -> None:
         "fk_tickets_support_request", "tickets", "support_requests", ["support_request_id"], ["id"],
     )
     op.create_unique_constraint("uq_tickets_support_request", "tickets", ["support_request_id"])
-    op.add_column("tickets", sa.Column("external_key", sa.String(100)))
-    op.add_column("tickets", sa.Column("conversation", sa.Text()))
+    op.add_column("tickets", sa.Column("attachment_comment_id", sa.String(100)))
     op.add_column("tickets", sa.Column("next_attempt_at", sa.DateTime(timezone=True)))
 
 
 def downgrade() -> None:
     op.drop_column("tickets", "next_attempt_at")
-    op.drop_column("tickets", "conversation")
-    op.drop_column("tickets", "external_key")
+    op.drop_column("tickets", "attachment_comment_id")
     op.drop_constraint("uq_tickets_support_request", "tickets", type_="unique")
     op.drop_constraint("fk_tickets_support_request", "tickets", type_="foreignkey")
     op.drop_column("tickets", "support_request_id")

@@ -11,6 +11,7 @@ from redis.backoff import NoBackoff
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from config import (
+    AnalyticsSettings,
     AuthSettings,
     ConfluenceSettings,
     DatabaseSettings,
@@ -28,6 +29,7 @@ from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
 from repositories.rag_model import RagModel
 from repositories.rag_uploads import RagUploads
+from repositories.technical_analytics import PrometheusRepository
 from services.confluence import ConfluenceService
 from services.rag import RagOriginals, RagService
 from services.rag_ingest import RagIngest
@@ -49,7 +51,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     confluence_settings = ConfluenceSettings()
     embeddings = EmbeddingSettings()
     redis_settings = RedisSettings()
+    analytics = AnalyticsSettings()
     async with AsyncExitStack() as stack:
+        app.state.prometheus = None
+        if analytics.prometheus_url:
+            prometheus_client = await stack.enter_async_context(httpx.AsyncClient(
+                base_url=str(analytics.prometheus_url), timeout=3,
+            ))
+            app.state.prometheus = PrometheusRepository(prometheus_client)
         access_log = logging.getLogger("uvicorn.access")
         access_log.addFilter(redact_file_signature)
         stack.callback(access_log.removeFilter, redact_file_signature)

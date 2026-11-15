@@ -7,7 +7,8 @@ from config import TICKET_ROUTES
 from db.models import SupportRequest, Ticket
 from repositories.support_requests import SupportRequestRepository
 from repositories.tickets import TicketRepository
-from schemas.support_requests import SupportRequestCreate, SupportTicketCreate
+from schemas.support_requests import SupportRequestCreate
+from schemas.ticket import TicketCreate
 
 
 class SupportRequestConflict(Exception):
@@ -41,7 +42,7 @@ class SupportRequestService:
             raise SupportRequestNotFound
         return ticket
 
-    async def create_ticket(self, request_id: UUID, data: SupportTicketCreate) -> Ticket:
+    async def create_ticket(self, request_id: UUID, data: TicketCreate) -> Ticket:
         request = await self.get(request_id)
         if request.close_reason not in {"rag_exhausted", "operator_requested"}:
             raise SupportRequestConflict
@@ -53,7 +54,6 @@ class SupportRequestService:
             system=TICKET_ROUTES[category]["system"],
             status="queued",
             support_request_id=request.id,
-            conversation=data.conversation,
             next_attempt_at=datetime.now(timezone.utc),
         )
         try:

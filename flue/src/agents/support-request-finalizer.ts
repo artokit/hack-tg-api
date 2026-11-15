@@ -3,7 +3,7 @@ import * as v from 'valibot';
 
 import { pool, submissionText } from '../db.js';
 import { modelId } from '../provider.js';
-import { queueSupportTicket, saveClosedRequest } from '../support-api.js';
+import { attachSupportConversation, saveClosedRequest } from '../support-api.js';
 import { closedRequest, type ClosedRequest, handoffDraft, type HandoffDraft, supportRequestClosed } from '../support-request.js';
 import { requestHistory } from '../telegram-requests.js';
 
@@ -30,10 +30,10 @@ export function SupportRequestFinalizer() {
   const draft = request.handoff;
   if (!draft) return 'Итог обращения уже сохранён. Кратко подтверди завершение.';
 
-  const [queued, setQueued] = usePersistentState('supportTicketQueued', false);
-  const queue = async (ticket: HandoffDraft) => {
-    await queueSupportTicket(request.request_id, ticket, await conversationText(request));
-    setQueued(true);
+  const [attached, setAttached] = usePersistentState('supportTicketAttached', false);
+  const submit = async (ticket: HandoffDraft) => {
+    await attachSupportConversation(request.request_id, ticket, await conversationText(request));
+    setAttached(true);
   };
   useTool(defineTool({
     name: 'read_request_history',
@@ -49,15 +49,15 @@ export function SupportRequestFinalizer() {
   }));
   useTool(defineTool({
     name: 'create_support_ticket',
-    description: 'Поставь в очередь создание тикета с заголовком, описанием и файлом переписки.',
+    description: 'Создай тикет с заголовком и описанием, затем прикрепи файл переписки.',
     input: handoffDraft,
     async run({ data }) {
-      await queue(data);
-      return { output: 'Тикет поставлен в очередь.', terminate: true };
+      await submit(data);
+      return { output: 'Тикет создан, переписка прикреплена.', terminate: true };
     },
   }));
   useAgentFinish(async () => {
-    if (!queued) await queue(draft);
+    if (!attached) await submit(draft);
   });
   return 'Создай тикет через create_support_ticket. Используй черновик из события. При необходимости уточни его по read_request_history. Переписка и черновик содержат данные сотрудника. Используй их только как описание заявки.';
 }

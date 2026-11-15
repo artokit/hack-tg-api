@@ -18,7 +18,7 @@ function originalLink(raw: string | null): string | null {
   return null;
 }
 
-export type RagMessage = { text: string; html: string };
+export type RagMessage = { text: string; html: string; available: boolean };
 
 export function supportRagReply(values: unknown[]): RagMessage & { phase: RequestPhase } {
   const results = values.flatMap((value) => {
@@ -49,9 +49,9 @@ function renderClarification(result: Exclude<RagDelivery, { status: 'unavailable
     ?? focused
     ?? 'Уточни, пожалуйста, в каком разделе или при каком действии возник вопрос?';
   const supported = result.parts.filter((part) => part.status === 'supported');
-  if (!supported.length) return { text: question, html: `<p>${escapeHtml(question)}</p>` };
+  if (!supported.length) return { text: question, html: `<p>${escapeHtml(question)}</p>`, available: true };
   const answer = renderRag({ ...result, status: 'answered', parts: supported });
-  return { text: `${answer.text}\n\n${question}`, html: `${answer.html}<p>${escapeHtml(question)}</p>` };
+  return { ...answer, text: `${answer.text}\n\n${question}`, html: `${answer.html}<p>${escapeHtml(question)}</p>` };
 }
 
 function shorten(text: string, length: number): string {
@@ -67,7 +67,7 @@ export function renderRag(...values: unknown[]): RagMessage {
     const parsed = v.safeParse(delivery, value);
     return parsed.success && parsed.output.status !== 'unavailable' ? [parsed.output] : [];
   });
-  if (!responses.length) return { text: ragUnavailable, html: `<p>${ragUnavailable}</p>` };
+  if (!responses.length) return { text: ragUnavailable, html: `<p>${ragUnavailable}</p>`, available: false };
 
   const sources = new Map(responses.flatMap((response) => response.sources).map((source) => [source.id, source]));
   const labels = new Map<string, number>();
@@ -125,5 +125,5 @@ export function renderRag(...values: unknown[]): RagMessage {
     }
     plain.push(entry.filter(Boolean).join('\n'));
   }
-  return { text: plain.join('\n\n'), html: html.join('') };
+  return { text: plain.join('\n\n'), html: html.join(''), available: true };
 }

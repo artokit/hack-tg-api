@@ -15,6 +15,8 @@ class TicketRepository:
         return await self._session.scalar(
             select(Ticket).where(Ticket.support_request_id == request_id)
         )
+    async def get_for_update(self, ticket_id: int) -> Ticket | None:
+        return await self._session.get(Ticket, ticket_id, with_for_update=True)
 
     async def create(self, ticket: Ticket) -> Ticket:
         self._session.add(ticket)
@@ -34,7 +36,7 @@ class TicketRepository:
                 .where(
                     Ticket.support_request_id.is_not(None),
                     Ticket.next_attempt_at <= now,
-                    Ticket.status.in_(("queued", "creating", "unknown", "attachment_pending")),
+                    Ticket.status.in_(("queued", "creating", "unknown")),
                 )
                 .order_by(Ticket.next_attempt_at, Ticket.id)
                 .limit(1)

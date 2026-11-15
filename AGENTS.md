@@ -69,7 +69,7 @@ hackathon/
 
 ## Архитектура API — onion (луковичная)
 
-**БД — только PostgreSQL.** Никакого sqlite нигде: ни в коде, ни в миграциях, ни в тестах. Драйвер — `asyncpg`. Строка подключения — из `DATABASE_URL` в `api/.env` (формат: `postgresql+asyncpg://user:password@host:5432/dbname`). Миграции тоже идут в postgres через `DATABASE_URL` (см. `alembic/env.py`). Локальный postgres для разработки поднимается через `docker compose -f docker-compose-dev.yml up -d` (только postgres, без API/бота).
+**БД — только PostgreSQL.** Никакого sqlite нигде: ни в коде, ни в миграциях, ни в тестах. Драйвер — `asyncpg`. Строка подключения — из `DATABASE_URL` в `api/.env` (формат: `postgresql+asyncpg://user:password@host:5432/dbname`). Миграции тоже идут в postgres через `DATABASE_URL` (см. `alembic/env.py`). Окружение разработки поднимается через `docker compose -f docker-compose-dev.yml up -d --build --wait`: PostgreSQL, Redis, Flue, файловый сервис с отдельной БД и MinIO. Основной API запускается локально с `--host 0.0.0.0`, Flue обращается к нему через `host.docker.internal`.
 
 Направление зависимостей — снаружи внутрь, внутренние слои не знают о внешних:
 
