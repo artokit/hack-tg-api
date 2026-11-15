@@ -1,6 +1,7 @@
 import type { StateSession } from '@kalutskii/grammy-fsm';
 import type { Pool } from 'pg';
 import type { SupportAction } from './keyboards/support.js';
+import type { TelegramAttachment } from './telegram-attachments.js';
 import type { RequestPhase } from './telegram-requests.js';
 
 export interface IncomingMessage {
@@ -10,6 +11,7 @@ export interface IncomingMessage {
   lastName?: string | null;
   username?: string | null;
   supportAction?: SupportAction;
+  attachment?: TelegramAttachment;
 }
 
 export interface PendingUpdate {

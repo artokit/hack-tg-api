@@ -26,7 +26,7 @@ const chatModel = {
   provider: 'bars-chat',
   baseUrl,
   reasoning: false,
-  input: ['text' as const],
+  input: ['text' as const, 'image' as const],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   contextWindow,
   maxTokens: Math.min(Math.floor(contextWindow / 8), 1600),
@@ -70,7 +70,6 @@ export const provider = createProvider({
   models: [chatModel, {
     ...chatModel,
     id: documentModelId,
-    input: ['text', 'image'],
     maxTokens: Math.min(Math.floor(contextWindow / 2), 4200),
   }],
   api: {

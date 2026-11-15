@@ -1,4 +1,4 @@
-import { AgentRunError, init } from '@flue/runtime';
+import { AgentRunError, type DeliveredMessageInput, init } from '@flue/runtime';
 import { type FSMFlavor, type StateSession, stateMiddleware } from '@kalutskii/grammy-fsm';
 import { type Api, type SessionFlavor, Composer, Context } from 'grammy';
 import * as v from 'valibot';
@@ -11,7 +11,8 @@ import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employe
 import { getSupportKeyboard, type SupportButtons } from './keyboards/support.js';
 import { getSupportTicketUrl } from './support-api.js';
 import { recordDelivery, recordReplyDuration } from './telemetry.js';
-import { isAcknowledgement, isCloseRequest, renderChatReply } from './telegram-chat.js';
+import { attachmentSummary, loadAttachment } from './telegram-attachments.js';
+import { attachmentReply, isAcknowledgement, isCloseRequest, renderChatReply } from './telegram-chat.js';
 import { type ClosedRequest, type CloseReason, isOperatorRequest, type SupportAction, supportAction, supportRequestClosed } from './support-request.js';
 import { renderRag, supportRagReply } from './telegram-rag.js';
 import { type DeliveryResult, TelegramOutput } from './telegram-output.js';
@@ -58,6 +59,7 @@ export class TelegramWorker {
   private readonly handlers = new Composer<UpdateContext>();
   private scanning = false;
   private recovered = false;
+  private attachmentAdmissions = 0;
   private botInfo: Context['me'] | undefined;
 
   constructor(
@@ -105,10 +107,25 @@ export class TelegramWorker {
       const blockedChats = new Set<string>();
       for (const update of await this.store.pending()) {
         if (this.processing.has(update.sequence) || this.replies.has(update.chat_id) || blockedChats.has(update.chat_id)) continue;
+        const loadsAttachment = !!update.payload.attachment && update.submission_id === null;
+        if (loadsAttachment && this.attachmentAdmissions >= 4) {
+          blockedChats.add(update.chat_id);
+          continue;
+        }
         this.processing.add(update.sequence);
         try {
           await this.store.startProcessing(update.sequence);
-          await this.runReply(update.chat_id, () => this.admit(update));
+          const admission = this.runReply(update.chat_id, () => this.admit(update));
+          if (loadsAttachment) {
+            this.attachmentAdmissions++;
+            void admission.catch((error: unknown) => {
+              this.processing.delete(update.sequence);
+              blockedChats.add(update.chat_id);
+              this.logFailure(update, error);
+            }).finally(() => { this.attachmentAdmissions--; });
+          } else {
+            await admission;
+          }
         } catch (error) {
           this.processing.delete(update.sequence);
           blockedChats.add(update.chat_id);
@@ -127,7 +144,7 @@ export class TelegramWorker {
     let answer: string | null;
     try {
       employee = await isEmployee(update.payload);
-      answer = update.command_answer ?? (update.instance_id === null
+      answer = update.command_answer ?? (update.instance_id === null && !update.payload.attachment
         ? await this.handle(update, employee) : null);
     } catch (error) {
       if (!(error instanceof UserBannedError)) throw error;
@@ -144,6 +161,17 @@ export class TelegramWorker {
       return;
     }
 
+    const { attachment, text } = update.payload;
+    let message: DeliveredMessageInput = text;
+    if (attachment && update.submission_id === null) {
+      const loaded = await loadAttachment(this.telegram, attachment, text);
+      if ('error' in loaded) {
+        this.sendService(update, 'attachment', loaded.error);
+        return;
+      }
+      message = loaded.message;
+    }
+
     const legacy = update.instance_id !== null && update.request_id === null;
     const request = legacy ? undefined : await this.acceptForRequest(update);
     if (!legacy && !request) return;
@@ -153,7 +181,7 @@ export class TelegramWorker {
     let submission = update.submission_id;
     if (submission === null) {
       const receipt = await agent.dispatch({
-        message: update.payload.text,
+        message,
         idempotencyKey: `telegram:${update.update_id}`,
       });
       submission = receipt.submissionId;
@@ -168,6 +196,7 @@ export class TelegramWorker {
       let replyHtml: string | undefined;
       let replyImages: string[] | undefined;
       let phase: RequestPhase = 'technical';
+      let rich = true;
       let followUp: string | undefined;
       let buttons: SupportButtons | undefined;
       let action: SupportAction | undefined;
@@ -179,6 +208,7 @@ export class TelegramWorker {
         const responseId = reply.metadata?.telegramResponseId;
         if (typeof responseId === 'string') deliveryId = `response:${responseId}`;
         const ragResults = reply.data.ragAnswer;
+        const parsedAttachment = v.safeParse(attachmentReply, reply.data.attachmentAnswer?.at(-1));
         if (ragResults?.length) {
           const rendered: ReturnType<typeof supportRagReply> = request
             ? supportRagReply(ragResults, request.phase)
@@ -190,6 +220,10 @@ export class TelegramWorker {
           replyHtml = rendered.html;
           replyImages = rendered.images;
           available = rendered.available;
+        } else if (parsedAttachment.success) {
+          replyText = parsedAttachment.output.text;
+          phase = parsedAttachment.output.kind === 'clarify' ? 'clarification' : 'answer';
+          rich = false;
         } else if (!replyText) {
           replyText = renderChatReply(...(reply.data.chatAnswer ?? [])) ?? '';
         }
@@ -203,7 +237,7 @@ export class TelegramWorker {
       const kind = replyText && available ? 'answer' : 'fallback';
       if (!request) {
         const receipt = await this.output.send(
-          deliveryId, update.chat_id, replyText || unavailable, kind, !!replyText, replyHtml, replyImages,
+          deliveryId, update.chat_id, replyText || unavailable, kind, rich && !!replyText, replyHtml, replyImages,
         );
         if (kind === 'answer') await this.recordReplyTiming(submissionId, receipt);
         return;
@@ -217,7 +251,7 @@ export class TelegramWorker {
         }
         const receipt = await this.deliver(request, deliveryId, replyText || unavailable, {
           sequence: update.sequence, phase: followUp ? undefined : phase,
-          html: replyHtml, rich: !!replyText, kind, images: replyImages, buttons: followUp ? undefined : buttons,
+          html: replyHtml, rich: rich && !!replyText, kind, images: replyImages, buttons: followUp ? undefined : buttons,
         });
         if (followUp && receipt.status === 'sent') {
           const next = await this.deliver(request, `${deliveryId}:follow-up`, followUp, {
@@ -268,7 +302,8 @@ export class TelegramWorker {
   }
 
   private async acceptForRequest(update: PendingUpdate): Promise<ActiveRequest | undefined> {
-    const text = shortReply(update.payload.text);
+    const { attachment, text: message } = update.payload;
+    const text = attachment ? '' : shortReply(message);
     const thanks = isAcknowledgement(text);
     const close = isCloseRequest(text);
     const action = update.payload.supportAction;
@@ -309,10 +344,9 @@ export class TelegramWorker {
     const yes = (markingSolved || confirmingClose) && /^(?:да|да,? закрыть)$/u.test(text);
     const no = (markingSolved || confirmingClose) && /^(?:нет|нет,? (?:нужна помощь|продолжим))$/u.test(text);
     const answered = request.phase === 'answer' || markingSolved;
-    await this.requests.append(
-      request, `user:${update.update_id}`, 'user', update.received_at,
-      thanks || close || yes || no || handoff || declinedHandoff || action ? update.payload.text : null, update.sequence,
-    );
+    const historyText = attachment ? [message, `[${attachmentSummary(attachment)}]`].filter(Boolean).join('\n')
+      : thanks || close || yes || no || handoff || declinedHandoff || action ? message : null;
+    await this.requests.append(request, `user:${update.update_id}`, 'user', update.received_at, historyText, update.sequence);
     const reason = close || (yes && confirmingClose) ? 'user_closed'
       : handoff ? 'operator_requested' : yes ? 'confirmed' : thanks && answered ? 'thanks' : undefined;
     if (reason) {

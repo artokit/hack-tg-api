@@ -24,6 +24,23 @@ export function chatTool(write: (kind: ReplyKind) => void) {
   });
 }
 
+export const attachmentReply = v.object({
+  kind: v.picklist(['answer', 'clarify']),
+  text: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(2000)),
+});
+
+export function attachmentReplyTool(write: (reply: v.InferOutput<typeof attachmentReply>) => void) {
+  return defineTool({
+    name: 'reply_about_attachment',
+    description: 'Ответь по содержимому вложения (answer) или уточни, что нужно посмотреть (clarify). Для инструкций из базы знаний используй answer_from_docs.',
+    input: attachmentReply,
+    run({ data }) {
+      write(data);
+      return { output: data.text, terminate: true };
+    },
+  });
+}
+
 const gratitude = '(?:спасибо(?: большое| огромное)?|большое спасибо|огромное спасибо|благодарю|thanks|thank you)';
 const acknowledgement = '(?:понял[аи]?|понятно|разобрал(?:ся|ась)|вс[её] (?:понятно|получилось|работает))';
 const shortAcknowledgement = new RegExp(
