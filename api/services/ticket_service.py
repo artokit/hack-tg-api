@@ -6,7 +6,7 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from config import TICKET_ROUTES
-from db.models import Ticket
+from db.models import SupportRequest, Ticket
 from repositories.tickets import TicketRepository
 from schemas.ticket import TicketCreate
 from tickets.base import TicketAttachment, TicketRequest, TicketSystem
@@ -26,6 +26,12 @@ class TicketLookupError(Exception):
 class TicketService:
     def __init__(self, repository: TicketRepository):
         self._repository = repository
+
+    async def jira_recipient(self, external_key: str, external_id: str) -> SupportRequest:
+        request = await self._repository.jira_recipient(external_key, external_id)
+        if request is None:
+            raise TicketLookupError("Получатель заявки не найден")
+        return request
 
     async def create(self, data: TicketCreate) -> Ticket:
         route = TICKET_ROUTES.get(data.category) or TICKET_ROUTES["default"]
