@@ -13,6 +13,7 @@ from repositories.rag_model import RagModel
 from repositories.rag_urls import load_url
 from schemas.confluence import ConfluencePageRead
 from services.confluence import ConfluenceService
+from services.github import GithubService
 from utils.exceptions import ConfluenceNotConfiguredError, ConfluenceTimeoutError, ConfluenceUnavailableError
 
 
@@ -74,7 +75,7 @@ class RagIngest:
         self, jobs: RagJobs, index: RagIndex, model: RagModel,
         load: Callable[[RagImport], Awaitable[bytes]], discard_upload: Callable[[UUID], None],
         delete_file: Callable[[UUID], Awaitable[None]],
-        confluence: ConfluenceService,
+        confluence: ConfluenceService, github: GithubService | None = None,
     ):
         self.jobs = jobs
         self.index = index
@@ -83,6 +84,7 @@ class RagIngest:
         self.discard_upload = discard_upload
         self.delete_file = delete_file
         self.confluence = confluence
+        self.github = github
 
     async def worker(self) -> None:
         next_cleanup = 0.0
@@ -91,6 +93,8 @@ class RagIngest:
                 async with self.jobs.worker_lock(self.index.key) as locked:
                     if locked:
                         while True:
+                            if self.github:
+                                await self.github.sync_pending()
                             now = asyncio.get_running_loop().time()
                             if now >= next_cleanup:
                                 await self.purge_artifacts()
@@ -174,7 +178,7 @@ class RagIngest:
                 elif job.source_kind == "url" and job.source_url:
                     data, format, default_title = await load_url(job.source_url)
                     job = replace(job, title=job.title or default_title[:250], format=format)
-                elif job.source_kind == "file":
+                elif job.source_kind in ("file", "github"):
                     data = await self.load(job)
                 else:
                     raise InvalidDocument("unsupported_source_kind")

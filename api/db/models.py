@@ -115,6 +115,14 @@ class RagDocument(Base):
     active_version: Mapped[str] = mapped_column(String(36))
 
 
+class RagGithubSync(Base):
+    __tablename__ = "rag_github_syncs"
+
+    index_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class RagJob(Base):
     __tablename__ = "rag_jobs"
     __table_args__ = (
