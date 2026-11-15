@@ -3,15 +3,15 @@ from functools import partial
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, Header, HTTPException, Path, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Path, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
 
 from depends import get_current_user, get_rag_originals, get_rag_service, require_bot_token
 from models.rag import DocumentTooLarge, InvalidDocument, RagDocumentNotFound, RagUnavailable
 from repositories.rag_files import MAX_DOCUMENT_BYTES
 from schemas.rag import (
-    CONFLUENCE_ID_PATTERN, SOURCE_ID_PATTERN, RagConfluenceImportCreate, RagEvidenceRead, RagJobCreated,
-    RagJobPage, RagJobRead, RagSearchRequest, RagUrlRequest,
+    CONFLUENCE_ID_PATTERN, SOURCE_ID_PATTERN, RagConfluenceImportCreate, RagEvidenceRead, RagFileUploadCreated,
+    RagFileUploadError, RagJobCreated, RagJobPage, RagJobRead, RagSearchRequest, RagUrlRequest,
 )
 from services.rag import RagOriginals, RagService, UnexpectedDocumentId
 
@@ -30,6 +30,25 @@ async def upload_document(
     title: Annotated[str | None, Form(min_length=1, max_length=250)] = None,
 ):
     return await save_upload(file, title, partial(service.submit_file, source_id))
+
+
+@router.post(
+    "/rag/documents/batch", dependencies=[Depends(get_current_user)],
+)
+async def upload_documents(
+    service: Service, files: Annotated[list[UploadFile], File(min_length=1)],
+) -> list[RagFileUploadCreated | RagFileUploadError]:
+    results: list[RagFileUploadCreated | RagFileUploadError] = []
+    submit = partial(service.submit_file, None)
+    for file in files:
+        filename = file.filename or ""
+        try:
+            job = await save_upload(file, None, submit)
+        except HTTPException as error:
+            results.append(RagFileUploadError(filename=filename, status_code=error.status_code, detail=error.detail))
+        else:
+            results.append(RagFileUploadCreated(filename=filename, **job.model_dump()))
+    return results
 
 
 async def save_upload(
