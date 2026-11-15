@@ -36,6 +36,10 @@ class SupportRequestService:
             raise SupportRequestNotFound
         return request
 
+    async def record_kb_search(self, instance_id: str | None) -> None:
+        if instance_id is not None:
+            await self._requests.record_kb_search(instance_id)
+
     async def cost_summary(self, from_at: datetime | None, to_at: datetime | None) -> RequestCostRead:
         closed_count, priced_count, total = await self._requests.cost_summary(from_at, to_at)
         return RequestCostRead(

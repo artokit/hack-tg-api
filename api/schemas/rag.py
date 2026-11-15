@@ -77,6 +77,7 @@ class RagSearchRequest(BaseModel):
     exact_id: str | None = Field(default=None, max_length=40)
     standalone: bool = False
     include_visual: bool = False
+    request_instance_id: str | None = Field(default=None, min_length=1, max_length=512)
 
 
 class RagEvidenceRead(BaseModel):

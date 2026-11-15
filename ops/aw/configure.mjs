@@ -53,7 +53,7 @@ for (const widgetId of Object.values(widgets)) {
 const sql = (await readFile(new URL('./requests.sql', import.meta.url), 'utf8')).trim().replace(/;$/, '');
 const summary = await api('model-object/sql-data', {
   data_source_id: sourceId,
-  query: `SELECT count(*) AS total, count(*) FILTER (WHERE response_metrics_complete) AS covered, count(*) FILTER (WHERE category_id IS NOT NULL) AS categorized FROM (${sql}) AS requests`,
+  query: `SELECT count(*) AS total, count(*) FILTER (WHERE kb_search_count IS NOT NULL) AS covered, count(*) FILTER (WHERE category_id IS NOT NULL) AS categorized FROM (${sql}) AS requests`,
 });
 console.log('Source coverage:', summary);
 await api(`model-object/update?id=${objectId}`, {
@@ -123,17 +123,17 @@ autonomous.settings.info = {
 };
 
 const firstAnswer = kpi(
-  widgets.firstAnswer, 'БАРС — решения с первого ответа (%)', 'С первого ответа, %',
-  'Среди обращений с полным учётом',
-  [field('first_answer_resolved_percent', 'AVG'), field('response_metrics_coverage_percent', 'AVG')],
+  widgets.firstAnswer, 'БАРС — решения с одного запроса в БЗ (%)', 'С одного запроса в БЗ, %',
+  'Подтверждённое решение после одного поиска',
+  [field('first_kb_search_resolved_percent', 'AVG'), field('kb_search_coverage_percent', 'AVG')],
   {
-    first_answer_resolved_percent: 'Решено с первого ответа, %',
-    response_metrics_coverage_percent: 'Полнота учёта, %',
+    first_kb_search_resolved_percent: 'Решено с одного поиска, %',
+    kb_search_coverage_percent: 'Полнота учёта поисков, %',
   }, '#2563EB', '#EFF6FF',
 );
 firstAnswer.settings.info = {
   enable: true,
-  text: 'Подтверждено, один содержательный ответ, ноль уточнений, без handoff. Старые и неполные события исключены из знаменателя; полнота учёта показана отдельно. Открытые обращения с полным учётом входят в знаменатель.',
+  text: 'Подтверждено (confirmed), ровно один вызов /internal/rag/search, без handoff. Каждый поиск split и повторная попытка считаются отдельно; попадание в кэш тоже считается запросом. Число сообщений и уточнений не влияет. Старые обращения с неизвестным счётчиком исключены, открытые с известным — включены.',
 };
 
 const reasons = payload(widgets.reasons);

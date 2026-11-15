@@ -6,7 +6,7 @@ import { ragModelId } from './provider.js';
 import { ragPrompts } from './rag-prompts.js';
 import { selectVisuals } from './rag-visual.js';
 import { withTransientHarness } from './transient-harness.js';
-import { measureRag } from './telemetry.js';
+import { measureRag, ragRequestInstanceId } from './telemetry.js';
 
 const source = v.object({
   id: v.string(),
@@ -114,6 +114,7 @@ function searchParts(original: string, questions?: string[]): SearchPart[] {
 async function search(
   item: SearchPart, original: string, standalone: boolean, includeVisual: boolean, signal: AbortSignal,
 ): Promise<Evidence[]> {
+  const requestInstanceId = ragRequestInstanceId();
   const response = await fetch(`${httpUrl('API_URL')}/internal/rag/search`, {
     method: 'POST',
     signal,
@@ -121,6 +122,7 @@ async function search(
     body: JSON.stringify({
       question: item.question, original_question: original, exact_id: item.exactId, standalone,
       ...(includeVisual ? { include_visual: true } : {}),
+      ...(requestInstanceId ? { request_instance_id: requestInstanceId } : {}),
     }),
   });
   if (!response.ok) throw new Error(`RAG search status ${response.status}`);

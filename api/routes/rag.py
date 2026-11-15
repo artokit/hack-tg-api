@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Path, Query, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from depends import get_current_user, get_rag_originals, get_rag_service, require_bot_token
+from depends import get_current_user, get_rag_originals, get_rag_service, get_support_request_service, require_bot_token
 from models.rag import DocumentTooLarge, InvalidDocument, RagDocumentNotFound, RagUnavailable
 from repositories.rag_files import MAX_DOCUMENT_BYTES
 from schemas.rag import (
@@ -14,6 +14,7 @@ from schemas.rag import (
     RagFileUploadError, RagJobCreated, RagJobPage, RagJobRead, RagSearchRequest, RagUrlRequest,
 )
 from services.rag import RagOriginals, RagService, UnexpectedDocumentId
+from services.support_requests import SupportRequestService
 
 
 router = APIRouter(tags=["rag"])
@@ -206,7 +207,11 @@ async def delete_document(job_id: UUID, service: Service):
 @router.post(
     "/internal/rag/search", response_model=list[RagEvidenceRead], dependencies=[Depends(require_bot_token)],
 )
-async def search(query: RagSearchRequest, service: Service):
+async def search(
+    query: RagSearchRequest, service: Service,
+    requests: Annotated[SupportRequestService, Depends(get_support_request_service)],
+):
+    await requests.record_kb_search(query.request_instance_id)
     try:
         return await service.search(
             query.question, query.exact_id, query.original_question, standalone=query.standalone,

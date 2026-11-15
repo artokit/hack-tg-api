@@ -18,6 +18,10 @@ const replyStages = new Map<string, ReplyStages>();
 const activeReplies = new Map<string, string>();
 const ragContext = new AsyncLocalStorage<{ instanceId: string; stages?: ReplyStages }>();
 
+export function ragRequestInstanceId(): string | undefined {
+  return ragContext.getStore()?.instanceId;
+}
+
 function createInstruments() {
   const meter = metrics.getMeter('bars');
   return {
