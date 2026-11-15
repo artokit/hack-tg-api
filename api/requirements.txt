@@ -6,6 +6,7 @@ httpx==0.28.1
 pydantic==2.13.5
 pydantic-settings==2.16.2
 PyJWT==2.15.1
+python-multipart==0.0.33
 redis==8.1.0
 sqlalchemy[asyncio]==2.1.8
 uvicorn==0.54.0
