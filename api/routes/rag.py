@@ -220,12 +220,28 @@ async def search(query: RagSearchRequest, service: Service):
 
 @router.get("/internal/rag/visual/{block_id}", dependencies=[Depends(require_bot_token)])
 async def visual(
-    block_id: Annotated[str, Path(pattern=r"^[a-f0-9-]{36}:[1-9][0-9]{0,5}$")], service: Service,
+    block_id: Annotated[str, Path(pattern=r"^[a-f0-9-]{36}:[1-9][0-9]{0,5}$")], service: Service, telegram: bool = False,
 ):
     try:
-        image = await service.visual(block_id)
+        image = await service.visual(block_id, telegram=telegram)
     except (RagDocumentNotFound, InvalidDocument) as error:
         raise HTTPException(status_code=404, detail="Document image unavailable") from error
     except RagUnavailable as error:
         raise HTTPException(status_code=503, detail="Document image temporarily unavailable") from error
     return Response(image, media_type="image/png", headers={"cache-control": "private, no-store"})
+
+
+@router.post(
+    "/rag/jobs/{job_id}/refresh-visuals", response_model=RagJobCreated, response_model_exclude_none=True,
+    status_code=202, dependencies=[Depends(get_current_user)],
+)
+async def refresh_visuals(job_id: UUID, service: Service):
+    try:
+        refresh_id, source_id = await service.refresh_visuals(job_id)
+    except RagDocumentNotFound as error:
+        raise HTTPException(status_code=404, detail="Document not found") from error
+    except InvalidDocument as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except RagUnavailable as error:
+        raise HTTPException(status_code=503, detail="Document import temporarily unavailable") from error
+    return RagJobCreated(job_id=refresh_id, source_id=source_id)

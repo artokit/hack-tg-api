@@ -7,8 +7,8 @@ from sqlalchemy.dialects.postgresql import distinct_on, insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from db.models import RagDocument, RagJob
-from models.rag import RETIRED_VERSION_GRACE, RagImport, RagQueueUnavailable
+from db.models import RagDocument, RagJob, RagVisualFile
+from models.rag import RETIRED_VERSION_GRACE, InvalidDocument, RagDocumentNotFound, RagImport, RagQueueUnavailable
 
 
 class RagJobs:
@@ -53,6 +53,12 @@ class RagJobs:
                 )
                 session.add(job)
             else:
+                current_locator = job.source_locator or {}
+                if (
+                    job.status in ("queued", "running") and current_locator.get("space_id") == space_id
+                    and current_locator.get("refresh_visuals") == "true"
+                ):
+                    locator["refresh_visuals"] = "true"
                 if job.status != "queued":
                     self.requeue(job)
                 job.source_locator = locator
@@ -64,6 +70,69 @@ class RagJobs:
             text("SELECT pg_advisory_xact_lock(hashtextextended(:source, 0))"),
             {"source": f"rag-source:{index_key}:{source_id}"},
         )
+
+    async def track_visual_files(self, index_key: str, version: str, file_ids: list[UUID]) -> None:
+        if file_ids:
+            async with self.session(transaction=True) as session:
+                await session.execute(insert(RagVisualFile).on_conflict_do_nothing(), [
+                    {"file_id": file_id, "index_key": index_key, "version": version} for file_id in file_ids
+                ])
+
+    async def visual_files(self, index_key: str, version: str) -> list[UUID]:
+        async with self.session() as session:
+            return list(await session.scalars(select(RagVisualFile.file_id).where(
+                RagVisualFile.index_key == index_key, RagVisualFile.version == version,
+            )))
+
+    async def forget_visual_file(self, file_id: UUID) -> None:
+        async with self.session(transaction=True) as session:
+            await session.execute(delete(RagVisualFile).where(RagVisualFile.file_id == file_id))
+
+    async def enqueue_visual_refresh(self, job_id: UUID, index_key: str) -> tuple[UUID, str]:
+        async with self.session(transaction=True) as session:
+            source_id = await session.scalar(select(RagJob.source_id).where(
+                RagJob.id == job_id, RagJob.index_key == index_key, RagJob.status != "deleting",
+            ))
+            if source_id is None:
+                raise RagDocumentNotFound
+            await self.lock_source(session, index_key, source_id)
+            scope = (RagJob.index_key == index_key, RagJob.source_id == source_id)
+            document = await session.get(RagDocument, (source_id, index_key))
+            if document is None:
+                raise RagDocumentNotFound
+            jobs = list(await session.scalars(
+                select(RagJob).where(*scope, RagJob.status != "deleting")
+                .order_by(RagJob.created_at.desc(), RagJob.id.desc()).with_for_update()
+            ))
+            stable = next((
+                job for job in jobs if job.source_kind in ("confluence", "github") and job.status != "skipped"
+            ), None)
+            active = next((job for job in jobs if job.version == document.active_version), stable)
+            if active is None:
+                raise RagDocumentNotFound
+            if active.source_kind != "confluence" and (
+                active.format != "docx" or active.source_kind == "file" and not active.file_id
+            ):
+                raise InvalidDocument("visual_refresh_unavailable")
+            if any(job.status in ("queued", "running") for job in jobs):
+                raise InvalidDocument("import_already_pending")
+            if stable is not None:
+                self.requeue(stable)
+                stable.title = active.title
+                stable.source_url = active.source_url
+                stable.format = active.format
+                stable.size_bytes = active.size_bytes
+                stable.source_revision = active.source_revision
+                stable.source_locator = {**(active.source_locator or {}), "refresh_visuals": "true"}
+                return stable.id, source_id
+            refresh_id = uuid4()
+            session.add(RagJob(
+                id=refresh_id, index_key=index_key, source_id=source_id, title=active.title,
+                source_url=active.source_url, format=active.format, file_id=active.file_id,
+                size_bytes=active.size_bytes, source_kind=active.source_kind, source_locator=active.source_locator,
+                source_revision=active.source_revision,
+            ))
+            return refresh_id, source_id
 
     async def replaceable_source(self, job_id: UUID, index_key: str) -> str | None:
         async with self.session() as session:
@@ -312,7 +381,11 @@ class RagJobs:
         async with self.session(transaction=True) as session:
             await self.lock_source(session, index_key, job.source_id)
             document = await session.get(RagDocument, (job.source_id, index_key))
-            if document is None or document.source_revision is None or page_version > int(document.source_revision):
+            if document is None or document.source_revision is None:
+                return False
+            active_version = int(document.source_revision)
+            refresh = (job.source_locator or {}).get("refresh_visuals") == "true"
+            if page_version > active_version or (page_version == active_version and refresh):
                 return False
             current = await session.get(RagJob, job.id, with_for_update=True)
             if current is not None and current.status == "running" and current.version == job.version:

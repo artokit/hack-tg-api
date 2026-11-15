@@ -34,6 +34,13 @@ async def delete_file(file_id: UUID, file_service: Annotated[FileService, Depend
     await file_service.delete_file(file_id)
 
 
+@router.put("/file/{file_id}/visual", status_code=204, dependencies=[Depends(require_bot_token)])
+async def put_visual(
+    file_id: UUID, file: UploadFile, file_service: Annotated[FileService, Depends(file_service_depends)],
+):
+    await file_service.put_visual(file_id, file)
+
+
 @router.get("/file/{file_id}/content", dependencies=[Depends(require_bot_token)])
 async def get_content(
     file_id: UUID, file_service: Annotated[FileService, Depends(file_service_depends)],

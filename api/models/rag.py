@@ -22,6 +22,7 @@ class Block:
     image: bytes | None = None
     label: str = ""
     identifiers: tuple[str, ...] = ()
+    image_file_id: UUID | None = None
 
 
 @dataclass(frozen=True)

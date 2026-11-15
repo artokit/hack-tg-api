@@ -124,7 +124,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 return await files.load(job.file_id) if job.file_id else await uploads.load(job)
 
             importer = RagIngest(
-                jobs, index, model, load_import, uploads.discard, files.delete, confluence, github_service,
+                jobs, index, model, load_import, uploads.discard, files, confluence, github_service,
             )
             worker = asyncio.create_task(importer.worker(), name="rag-import")
             stack.push_async_callback(stop_worker, worker)

@@ -18,6 +18,7 @@ FILE_TYPES = {
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "md": "text/plain; charset=utf-8",
+    "png": "image/png",
 }
 
 
@@ -63,6 +64,21 @@ class FileService:
             extension=file.extension,
             url=f"{config.S3_STORAGE_URL}/{config.S3_BUCKET_NAME}/{file_name_in_storage}"
         )
+
+    async def put_visual(self, file_id: UUID, file: UploadFile) -> None:
+        if file.size is not None and file.size > 25 * 1024 * 1024:
+            raise HTTPException(status_code=413)
+        if await file.read(8) != b"\x89PNG\r\n\x1a\n":
+            raise HTTPException(status_code=415)
+        await file.seek(0)
+        if not await self.repo.reserve_visual(file_id):
+            raise HTTPException(status_code=409)
+        try:
+            await run_in_threadpool(
+                self.s3.upload_fileobj, file.file, config.S3_BUCKET_NAME, self.object_key(file_id, "png"),
+            )
+        except (BotoCoreError, ClientError) as error:
+            raise HTTPException(status_code=503) from error
 
     async def delete_file(self, file_id: UUID) -> None:
         file = await self.repo.get_file_by_id(file_id)

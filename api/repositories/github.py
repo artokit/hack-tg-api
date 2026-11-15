@@ -130,16 +130,20 @@ class GithubSyncRepository:
                 jobs = jobs_by_source[source_id]
                 job = jobs[0] if jobs else None
                 published = active.get(source_id)
+                current = published is not None and published.source_revision == document.revision
                 if job is None:
                     job = RagJob(index_key=self.index_key, source_id=source_id, source_kind="github")
                     session.add(job)
-                elif published is not None and published.source_revision == document.revision:
+                elif (
+                    job.status in PENDING_STATUSES and job.source_revision == document.revision
+                    and (not current or (job.source_locator or {}).get("refresh_visuals") == "true")
+                ):
+                    continue
+                elif current and published is not None:
                     if job.version != published.active_version:
                         self.jobs.requeue(job)
                         self.set_document(job, document)
                         self.jobs.restore_published(job, published)
-                    continue
-                elif job.source_revision == document.revision and job.status in PENDING_STATUSES:
                     continue
                 else:
                     self.jobs.requeue(job)

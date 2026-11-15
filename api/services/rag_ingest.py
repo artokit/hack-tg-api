@@ -2,11 +2,12 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from uuid import UUID, uuid4
+from hashlib import sha256
+from uuid import UUID, uuid4, uuid5
 
 from models.rag import Block, Chunk, DocumentTooLarge, InvalidDocument, RagImport, RagQueueUnavailable, RagUnavailable
 from repositories.rag_extract import extract_blocks, table_blocks, text_blocks
-from repositories.rag_files import MAX_DOCUMENT_BYTES
+from repositories.rag_files import MAX_DOCUMENT_BYTES, RagFiles
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
 from repositories.rag_model import RagModel
@@ -74,7 +75,7 @@ class RagIngest:
     def __init__(
         self, jobs: RagJobs, index: RagIndex, model: RagModel,
         load: Callable[[RagImport], Awaitable[bytes]], discard_upload: Callable[[UUID], None],
-        delete_file: Callable[[UUID], Awaitable[None]],
+        files: RagFiles,
         confluence: ConfluenceService, github: GithubService,
     ):
         self.jobs = jobs
@@ -82,7 +83,7 @@ class RagIngest:
         self.model = model
         self.load = load
         self.discard_upload = discard_upload
-        self.delete_file = delete_file
+        self.files = files
         self.confluence = confluence
         self.github = github
 
@@ -119,7 +120,7 @@ class RagIngest:
             success = not version or await self.discard(version)
             if deleting and file_id:
                 try:
-                    await self.delete_file(UUID(file_id))
+                    await self.files.delete(UUID(file_id))
                 except RagUnavailable:
                     log.warning("RAG could not delete original %s", file_id)
                     success = False
@@ -136,6 +137,9 @@ class RagIngest:
     async def discard(self, version: str) -> bool:
         try:
             await self.index.discard(version)
+            for file_id in await self.jobs.visual_files(self.index.key, version):
+                await self.files.delete(file_id)
+                await self.jobs.forget_visual_file(file_id)
         except RagUnavailable:
             log.warning("RAG could not discard inactive version %s", version)
             return False
@@ -161,8 +165,9 @@ class RagIngest:
     async def process(self, job: RagImport) -> None:
         try:
             async with asyncio.timeout(1800):
-                if job.resumed:
-                    await self.index.discard(job.version)
+                if job.resumed and not await self.discard(job.version):
+                    raise RagUnavailable("discard_unavailable")
+                images = None
                 if job.source_kind == "confluence":
                     page = await self.load_confluence(job.source_locator or {})
                     job = replace(job, title=page.title[:250], source_url=page.url, source_revision=str(page.version))
@@ -172,6 +177,12 @@ class RagIngest:
                         return
                     if len(data) > MAX_DOCUMENT_BYTES:
                         raise DocumentTooLarge("document_too_large")
+                    try:
+                        images = await self.confluence.page_images(page)
+                    except ConfluenceTimeoutError as error:
+                        raise RagUnavailable("confluence_timeout") from error
+                    except ConfluenceUnavailableError as error:
+                        raise RagUnavailable("confluence_unavailable") from error
                 elif job.source_kind == "url" and job.source_url:
                     data, format, default_title = await load_url(job.source_url)
                     job = replace(job, title=job.title or default_title[:250], format=format)
@@ -179,7 +190,9 @@ class RagIngest:
                     data = await self.load(job)
                 else:
                     raise InvalidDocument("unsupported_source_kind")
-                blocks = await asyncio.to_thread(extract_blocks, data, job.format)
+                blocks = await asyncio.to_thread(extract_blocks, data, job.format, images)
+                if job.format in ("docx", "html"):
+                    blocks = await self.save_images(job.version, blocks)
                 blocks = await self.enrich(blocks)
                 if not blocks:
                     raise InvalidDocument("empty_document")
@@ -201,6 +214,20 @@ class RagIngest:
             else:
                 await self.discard(job.version)
         self.discard_upload(job.id)
+
+    async def save_images(self, version: str, blocks: list[Block]) -> list[Block]:
+        files: dict[UUID, bytes] = {}
+        indexed = []
+        for block in blocks:
+            if block.image is not None:
+                file_id = uuid5(UUID(version), sha256(block.image).hexdigest())
+                files.setdefault(file_id, block.image)
+                block = replace(block, image_file_id=file_id)
+            indexed.append(block)
+        await self.jobs.track_visual_files(self.index.key, version, list(files))
+        for file_id, data in files.items():
+            await self.files.put_visual(file_id, data)
+        return indexed
 
     async def enrich(self, blocks: list[Block]) -> list[Block]:
         async def read(index: int, block: Block, image: bytes) -> list[Block]:
@@ -226,9 +253,11 @@ class RagIngest:
                 ]
             if not parsed and block.kind == "scan":
                 raise InvalidDocument("unreadable_visual")
+            if not parsed and block.image_file_id:
+                return [replace(block, image=None)]
             if not parsed and block.table_id:
                 log.warning("RAG skipped an unreadable table on page %s", block.page)
-            return parsed
+            return [replace(part, image_file_id=block.image_file_id) for part in parsed]
 
         pending = {
             index: asyncio.create_task(read(index, block, block.image))
@@ -336,6 +365,7 @@ class RagIngest:
                 "table_id": block.table_id,
                 "label": block.label,
                 "identifiers": list(block.identifiers),
+                "image_file_id": str(block.image_file_id) if block.image_file_id else None,
             })
         return {
             "source_id": job.source_id,
@@ -344,6 +374,7 @@ class RagIngest:
             "source_url": job.source_url,
             "file_id": str(job.file_id) if job.file_id else None,
             "format": job.format,
+            "has_visual_file": any(block.image_file_id is not None for block in indexed),
             "order": order,
             "identifiers": list(dict.fromkeys(identifier for block in indexed for identifier in block.identifiers)),
             "block_ids": [part["id"] for part in evidence],

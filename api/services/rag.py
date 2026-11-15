@@ -10,7 +10,7 @@ from pydantic import TypeAdapter, ValidationError
 from models.github import GITHUB_SOURCE_PREFIX
 from models.rag import DocumentTooLarge, InvalidDocument, RagDocumentNotFound, RagQueueUnavailable, RagUnavailable
 from repositories.rag_cache import RagCache
-from repositories.rag_extract import identifiers, render_pdf_region
+from repositories.rag_extract import identifiers, render_pdf_region, telegram_png
 from repositories.rag_files import DOCUMENT_FORMATS, MAX_DOCUMENT_BYTES, RagFiles
 from repositories.rag_index import RagIndex
 from repositories.rag_jobs import RagJobs
@@ -105,6 +105,9 @@ class RagService:
     async def read_job(self, job_id: UUID):
         return await self.jobs.read(job_id, self.index.key)
 
+    async def refresh_visuals(self, job_id: UUID) -> tuple[UUID, str]:
+        return await self.jobs.enqueue_visual_refresh(job_id, self.index.key)
+
     async def list_jobs(self, page: int, page_size: int, include_history: bool):
         rows, total = await self.jobs.list_jobs(self.index.key, (page - 1) * page_size, page_size, include_history)
         items = []
@@ -122,15 +125,20 @@ class RagService:
             items.append(item)
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
-    async def visual(self, block_id: str) -> bytes:
+    async def visual(self, block_id: str, *, telegram: bool = False) -> bytes:
         versions = await self.jobs.active_versions(self.index.key)
         for chunk in await self.index.related([block_id], versions):
-            if chunk["format"] != "pdf" or not chunk.get("file_id"):
-                continue
             for block in chunk["evidence"]:
-                if block["id"] == block_id and block["kind"] in ("visual", "scan") and block.get("box") and block.get("page"):
+                if block["id"] != block_id or block["kind"] not in ("visual", "scan"):
+                    continue
+                if block.get("image_file_id"):
+                    image = await self.files.load(UUID(block["image_file_id"]))
+                elif chunk["format"] == "pdf" and chunk.get("file_id") and block.get("box") and block.get("page"):
                     data = await self.files.load(UUID(chunk["file_id"]))
-                    return await asyncio.to_thread(render_pdf_region, data, block["page"], block["box"])
+                    image = await asyncio.to_thread(render_pdf_region, data, block["page"], block["box"])
+                else:
+                    continue
+                return await asyncio.to_thread(telegram_png, image) if telegram else image
         raise RagDocumentNotFound
 
     async def search(
@@ -165,14 +173,25 @@ class RagService:
                 await self.cache.bind_original(original_key, key)
         return [
             {
-                **block.model_dump(exclude={"file_id", "box"}),
+                **block.model_dump(exclude={"file_id", "box", "image_file_id"}),
                 "source_url": self.files.link(block.file_id) if block.file_id else block.source_url,
                 "box": block.box if (
                     block.file_id and block.format == "pdf" and block.kind in ("visual", "scan")
                 ) else None,
+                "image_key": self.image_key(block),
             }
             for block in results
         ]
+
+    @staticmethod
+    def image_key(block: RagCachedEvidence) -> str | None:
+        if block.kind not in ("visual", "scan"):
+            return None
+        if block.image_file_id:
+            return str(block.image_file_id)
+        if block.format == "pdf" and block.file_id and block.page and block.box:
+            return f"{block.file_id}:{block.page}:{','.join(map(str, block.box))}"
+        return None
 
     @staticmethod
     def read_cached(cached: bytes | None) -> list[RagCachedEvidence] | None:
@@ -213,8 +232,11 @@ class RagService:
             cacheable = visual_chunks is not None
             if visual_chunks:
                 visual_ids = {
-                    block["id"] for chunk in visual_chunks if chunk["format"] == "pdf" and chunk.get("file_id")
-                    for block in chunk["evidence"] if block["kind"] in ("visual", "scan") and block.get("box")
+                    block["id"] for chunk in visual_chunks for block in chunk["evidence"]
+                    if block["kind"] in ("visual", "scan") and (
+                        block.get("image_file_id")
+                        or chunk["format"] == "pdf" and chunk.get("file_id") and block.get("page") and block.get("box")
+                    )
                 }
                 visual_evidence = self.evidence(visual_chunks, None, visual_ids)
                 for rank, (key, block) in enumerate(visual_evidence.items(), 1):

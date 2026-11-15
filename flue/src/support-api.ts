@@ -43,18 +43,12 @@ async function supportTicketId(id: string, draft: HandoffDraft): Promise<number>
     response = await botRequest(path);
   }
   if (!response.ok) throw new Error(`Ticket API status ${response.status}`);
-  throw new Error('Jira ticket is not available for attachment yet');
+  throw new Error('Jira ticket creation has not been confirmed yet');
 }
 
-export async function attachSupportConversation(id: string, draft: HandoffDraft, conversation: string): Promise<void> {
-  const ticketId = await supportTicketId(id, draft);
-  const form = new FormData();
-  form.set('file', new Blob([conversation], { type: 'text/plain;charset=utf-8' }), `conversation-${id}.txt`);
-  form.set('public', 'false');
-  const response = await botRequest(`tickets/${ticketId}/attachments`, {
-    method: 'POST', body: form, signal: AbortSignal.timeout(150_000),
+export async function createSupportTicket(id: string, draft: HandoffDraft, conversation: string): Promise<void> {
+  await supportTicketId(id, {
+    ...draft,
+    description: `${draft.description}\n\nПереписка по обращению:\n\n${conversation}`,
   });
-  if (response.ok) return;
-  if (response.status === 409 && (await response.json() as { detail?: string }).detail === 'Переписка уже прикреплена') return;
-  throw new Error(`Ticket attachment API status ${response.status}`);
 }

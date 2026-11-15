@@ -77,7 +77,6 @@ class Ticket(Base):
         ForeignKey("support_requests.id"), unique=True,
     )
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    attachment_comment_id: Mapped[str | None] = mapped_column(String(100))
     external_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     external_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -118,6 +117,15 @@ class RagDocument(Base):
     active_version: Mapped[str] = mapped_column(String(36))
     source_revision: Mapped[str | None] = mapped_column(Text)
     chunk_count: Mapped[int | None] = mapped_column()
+
+
+class RagVisualFile(Base):
+    __tablename__ = "rag_visual_files"
+    __table_args__ = (Index("ix_rag_visual_files_version", "index_key", "version"),)
+
+    file_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    index_key: Mapped[str] = mapped_column(String(64))
+    version: Mapped[str] = mapped_column(String(36))
 
 
 class RagGithubSync(Base):
