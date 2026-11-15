@@ -1,5 +1,11 @@
 import * as v from 'valibot';
 
+export const supportRequestCategory = v.picklist([
+  'access', 'navigation', 'search_filters', 'documents_records',
+  'business_processes', 'employees_contacts', 'other',
+]);
+export type SupportRequestCategory = v.InferOutput<typeof supportRequestCategory>;
+
 export const handoffDraft = v.object({
   title: v.pipe(v.string(), v.trim(), v.minLength(5), v.maxLength(255)),
   description: v.pipe(v.string(), v.trim(), v.minLength(1)),

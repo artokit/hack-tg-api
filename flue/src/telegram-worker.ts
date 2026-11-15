@@ -4,7 +4,7 @@ import { type Api, type SessionFlavor, Composer, Context } from 'grammy';
 import * as v from 'valibot';
 
 import { Bars } from './agents/bars.js';
-import { SupportRequestFinalizer } from './agents/support-request-finalizer.js';
+import { saveSupportRequestOutcome, SupportRequestFinalizer } from './agents/support-request-finalizer.js';
 import { bannedMessage, banUser, UserBannedError } from './bans-api.js';
 import { responseSubmission } from './db.js';
 import { acceptInvite, accessDenied, accessGranted, isEmployee } from './employees-api.js';
@@ -392,18 +392,20 @@ export class TelegramWorker {
   private async finalize(outcome: ClosedRequest, attempt: number): Promise<void> {
     const id = outcome.request_id;
     try {
-      const finalizer = init(SupportRequestFinalizer, { id });
-      const receipt = await finalizer.dispatch({
-        message: { kind: 'signal', type: supportRequestClosed, body: JSON.stringify(outcome) },
-        idempotencyKey: `support-request:${id}:${attempt}`,
-      });
-      await finalizer.read(receipt);
       if (outcome.handoff) {
+        const finalizer = init(SupportRequestFinalizer, { id });
+        const receipt = await finalizer.dispatch({
+          message: { kind: 'signal', type: supportRequestClosed, body: JSON.stringify(outcome) },
+          idempotencyKey: `support-request:${id}:${attempt}`,
+        });
+        await finalizer.read(receipt);
         const url = await getSupportTicketUrl(id);
         const chatId = outcome.telegram_chat_id;
         await this.runReply(chatId, async () => {
           await this.output.send(`ticket-created:${id}`, chatId, `Заявка создана в Jira.\n${url}`, 'service', false);
         });
+      } else {
+        await saveSupportRequestOutcome(outcome);
       }
       await this.requests.finalized(id);
     } catch (error) {
