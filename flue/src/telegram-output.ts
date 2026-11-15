@@ -1,5 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { Api, GrammyError, type InlineKeyboard, InputFile } from 'grammy';
+import { Api, GrammyError, HttpError, type InlineKeyboard, InputFile } from 'grammy';
 
 import { fetchRagImage } from './rag-visual.js';
 import { recordDelivery } from './telemetry.js';
@@ -82,15 +82,19 @@ export class TelegramOutput {
   }
 
   async send(
-    id: string, chatId: string, text: string, kind: DeliveryKind, markdown: boolean, html?: string, images?: string[],
-    keyboard?: InlineKeyboard,
+    id: string, chatId: string, text: string, kind: DeliveryKind, markdown: boolean,
+    { html, images, keyboard, replaceMessageId }: {
+      html?: string; images?: string[]; keyboard?: InlineKeyboard; replaceMessageId?: number;
+    } = {},
   ): Promise<DeliveryResult> {
     const media = html && images?.length ? await loadReplyPhotos(images) : [];
     if (!await this.store.claimDelivery(id, kind)) return this.store.delivery(id);
     const startedAt = Date.now();
     let status: DeliveryStatus = 'sent';
     try {
-      await this.sendMessage(chatId, text, markdown, html, media, keyboard);
+      if (replaceMessageId === undefined || !await this.replaceMessage(chatId, replaceMessageId, text, keyboard)) {
+        await this.sendMessage(chatId, text, markdown, html, media, keyboard);
+      }
     } catch (error) {
       status = error instanceof GrammyError && error.error_code < 500 ? 'failed' : 'unknown';
       console.warn('Telegram delivery', status, id, error instanceof Error ? error.name : 'Error');
@@ -99,6 +103,30 @@ export class TelegramOutput {
     const receipt = await this.store.recordDelivery(id, status);
     recordDelivery(kind, status);
     return { ...receipt, startedAt, finishedAt };
+  }
+
+  private async replaceMessage(chatId: string, messageId: number, text: string, keyboard?: InlineKeyboard): Promise<boolean> {
+    const emptyKeyboard = { inline_keyboard: [] };
+    const edit = () => withRateLimit(() => this.client.editMessageText(
+      chatId, messageId, text, { reply_markup: keyboard ?? emptyKeyboard },
+    ));
+    try {
+      await edit().catch(async (error: unknown) => {
+        if (!(error instanceof HttpError || (error instanceof GrammyError && error.error_code >= 500))) throw error;
+        await delay(250);
+        await edit();
+      });
+      return true;
+    } catch (error) {
+      if (!(error instanceof GrammyError) || ![400, 403].includes(error.error_code)) throw error;
+      if (error.error_code === 400 && error.description.includes('message is not modified')) return true;
+    }
+    try {
+      await withRateLimit(() => this.client.editMessageReplyMarkup(chatId, messageId, { reply_markup: emptyKeyboard }));
+    } catch (error) {
+      console.warn('Telegram keyboard removal failed', messageId, error instanceof Error ? error.name : 'Error');
+    }
+    return false;
   }
 
   private async sendMessage(

@@ -298,7 +298,8 @@ export class TelegramWorker {
         const kind = conversational ? 'service' : replyText && available ? 'answer' : 'fallback';
         if (!request) {
           const receipt = await this.output.send(
-            deliveryId, update.chat_id, replyText || unavailable, kind, rich && !!replyText, replyHtml, replyImages,
+            deliveryId, update.chat_id, replyText || unavailable, kind, rich && !!replyText,
+            { html: replyHtml, images: replyImages },
           );
           if (kind === 'answer') await this.recordReplyTiming(submissionId, receipt);
           return;
@@ -373,7 +374,7 @@ export class TelegramWorker {
     const current = await this.requests.active(update.chat_id);
     if (update.request_id && current?.id !== update.request_id) {
       const reason = await this.requests.closedBy(update);
-      this.sendService(update, 'closed', closeAcknowledgement(reason));
+      this.sendService(update, 'closed', closeAcknowledgement(reason), action?.messageId);
       return;
     }
     const previous = update.request_phase ?? current?.phase;
@@ -415,7 +416,7 @@ export class TelegramWorker {
         description: 'Сотрудник попросил передать обращение специалисту. Детали есть в переписке.',
       } : undefined;
       const closed = await this.requests.close(request, update.sequence, reason, draft);
-      this.sendService(update, 'closed', closed ? closeAcknowledgement(reason) : undefined);
+      this.sendService(update, 'closed', closed ? closeAcknowledgement(reason) : undefined, action?.messageId);
       return;
     }
     if (no || declinedHandoff) {
@@ -425,7 +426,7 @@ export class TelegramWorker {
         : { text: detailsQuestion, phase: 'details', buttons: 'operator' } as const;
       this.run(update, () => this.runReply(update.chat_id, async () => {
         await this.deliver(request, `prompt:${update.update_id}`, prompt.text, {
-          sequence: update.sequence, phase: prompt.phase, buttons: prompt.buttons,
+          sequence: update.sequence, phase: prompt.phase, buttons: prompt.buttons, replaceMessageId: action?.messageId,
         });
       }));
       return;
@@ -433,9 +434,13 @@ export class TelegramWorker {
     return request;
   }
 
-  private sendService(update: PendingUpdate, prefix: string, text?: string): void {
+  private sendService(update: PendingUpdate, prefix: string, text?: string, replaceMessageId?: number): void {
     this.run(update, () => this.runReply(update.chat_id, async () => {
-      if (text) await this.output.send(`${prefix}:${update.update_id}`, update.chat_id, text, 'service', false);
+      if (text) {
+        await this.output.send(
+          `${prefix}:${update.update_id}`, update.chat_id, text, 'service', false, { replaceMessageId },
+        );
+      }
     }));
   }
 
@@ -444,12 +449,14 @@ export class TelegramWorker {
     next?: {
       sequence?: string; phase?: RequestPhase; rich?: boolean; html?: string;
       kind?: DeliveryKind; images?: string[]; buttons?: SupportButtons; optional?: boolean; flags?: ReplyFlags;
+      replaceMessageId?: number;
     },
   ): Promise<DeliveryResult> {
     const keyboard = next?.buttons && next.sequence
       ? getSupportKeyboard(next.buttons, request.id, next.sequence) : undefined;
     const receipt = await this.output.send(
-      id, request.chat_id, text, next?.kind ?? 'service', next?.rich ?? false, next?.html, next?.images, keyboard,
+      id, request.chat_id, text, next?.kind ?? 'service', next?.rich ?? false,
+      { html: next?.html, images: next?.images, keyboard, replaceMessageId: next?.replaceMessageId },
     );
     if (receipt.status !== 'sent' || !receipt.sent_at) {
       if (next?.sequence && !next.optional) await this.requests.close(request, next.sequence, 'delivery_failed');

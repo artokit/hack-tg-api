@@ -10,14 +10,19 @@ function escapeHtml(text: string): string {
   return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 
-function originalLink(raw: string | null): string | null {
+function documentLink({ url: raw, page }: RagSource): string | null {
   if (!raw) return null;
   try {
     const url = new URL(raw);
-    if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) return url.href;
+    if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) {
+      if (page && url.hash === `#page=${page}`) url.hash = '';
+      return url.href;
+    }
   } catch {}
   return null;
 }
+
+const indexedSourceId = /^([\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}):\d+(?::\d+:\d+)?$/u;
 
 export type RagMessage = ReplyFlags & { text: string; html: string; available: boolean; images: string[] };
 
@@ -77,7 +82,8 @@ export function renderRag(...values: unknown[]): RagMessage {
   };
 
   const sources = new Map(responses.flatMap((response) => response.sources).map((source) => [source.id, source]));
-  const citations = new Map<string, { ordinal: number; source: RagSource; quotes: Set<string> }>();
+  const citations = new Map<string, { title: string; link: string | null; sources: Map<string, RagSource> }>();
+  const images = new Map<string, string>();
   const paragraphs: string[] = [];
   let missingEvidence = false;
   let hasAnswer = false;
@@ -94,20 +100,21 @@ export function renderRag(...values: unknown[]): RagMessage {
           missingEvidence = true;
           continue;
         }
-        const labels = new Set<string>();
         for (const source of evidence) {
-          const key = source.url && !source.visual
-            ? JSON.stringify([source.url, source.title, source.page, source.section, source.identifiers])
-            : source.id;
+          if (source.visual && source.image_key && !images.has(source.image_key)) {
+            images.set(source.image_key, source.id);
+          }
+          const link = documentLink(source);
+          const key = indexedSourceId.exec(source.id)?.[1] ?? source.file_id ?? link ?? source.id;
           let citation = citations.get(key);
           if (!citation) {
-            citation = { ordinal: citations.size + 1, source, quotes: new Set() };
+            citation = { title: source.title, link, sources: new Map() };
             citations.set(key, citation);
           }
-          if (source.quote) citation.quotes.add(source.quote);
-          labels.add(`[${citation.ordinal}]`);
+          citation.link ??= link;
+          citation.sources.set(source.id, source);
         }
-        paragraphs.push(`${item.statement} ${[...labels].join(' ')}`);
+        paragraphs.push(item.statement);
         hasAnswer = true;
       } else if (item.clarification.trim()) {
         paragraphs.push(item.clarification);
@@ -125,30 +132,34 @@ export function renderRag(...values: unknown[]): RagMessage {
 
   const html = paragraphs.map((text) => `<p>${escapeHtml(text)}</p>`);
   const plain = [...paragraphs];
-  const images = new Map<string, string>();
-  for (const { source, ordinal, quotes } of citations.values()) {
-    const title = shorten(source.title, 250);
-    const location = [
-      source.page ? `стр. ${source.page}` : '',
-      shorten(source.section.join(' / '), 200),
-      ...source.identifiers,
-    ].filter(Boolean).join(' · ');
-    const link = originalLink(source.url);
+  for (const citation of citations.values()) {
+    const title = shorten(citation.title, 250);
+    const { link } = citation;
     const name = escapeHtml(title);
     const label = link ? `<a href="${escapeHtml(link)}">${name}</a>` : name;
-    const placement = location ? ` · ${escapeHtml(location)}` : '';
-    html.push(`<p>${ordinal}. <b>${label}</b>${placement}</p>`);
-    const entry = [`${ordinal}. ${title}${location ? ` · ${location}` : ''}`, link];
-    if (source.visual) {
-      if (source.image_key && !images.has(source.image_key)) images.set(source.image_key, source.id);
-      html.push('<p>Описание распознано с изображения.</p>');
-      entry.push('Описание распознано с изображения.');
-    } else if (quotes.size) {
-      const excerpts = [...quotes].join('\n…\n');
-      html.push(`<blockquote>${escapeHtml(excerpts).replaceAll('\n', '<br>')}</blockquote>`);
-      entry.push(`«${excerpts}»`);
+    html.push(`<p><b>${label}</b></p>`);
+    const entry = link ? [title, link] : [title];
+    const excerpts = new Set<string>();
+    for (const source of citation.sources.values()) {
+      const location = [
+        source.page ? `стр. ${source.page}` : '',
+        shorten(source.section.join(' / '), 200),
+        ...source.identifiers,
+      ].filter(Boolean).join(' · ');
+      const quote = source.visual ? null : source.quote;
+      const key = JSON.stringify([location, quote]);
+      if (excerpts.has(key)) continue;
+      excerpts.add(key);
+      if (location) {
+        html.push(`<p>${escapeHtml(location)}</p>`);
+        entry.push(location);
+      }
+      if (quote) {
+        html.push(`<blockquote>${escapeHtml(quote).replaceAll('\n', '<br>')}</blockquote>`);
+        entry.push(`«${quote}»`);
+      }
     }
-    plain.push(entry.filter(Boolean).join('\n'));
+    plain.push(entry.join('\n'));
   }
   return {
     text: plain.join('\n\n'), html: html.join(''), available: true, images: [...images.values()],

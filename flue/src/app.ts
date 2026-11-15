@@ -46,7 +46,8 @@ const channel = createTelegramChannel({
     const action = parseSupportAction(callback?.data);
     if (callback?.message?.chat.type === 'private' && action) {
       await store.enqueue(update.update_id, callback.message.chat.id, {
-        text: supportActionText[action.kind], userId: callback.from.id, supportAction: action,
+        text: supportActionText[action.kind], userId: callback.from.id,
+        supportAction: { ...action, messageId: callback.message.message_id },
         firstName: callback.from.first_name, lastName: callback.from.last_name, username: callback.from.username,
       });
       void worker.scan();

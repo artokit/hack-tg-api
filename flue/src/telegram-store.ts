@@ -11,7 +11,7 @@ export interface IncomingMessage {
   firstName?: string | null;
   lastName?: string | null;
   username?: string | null;
-  supportAction?: SupportAction;
+  supportAction?: SupportAction & { messageId?: number };
   attachment?: TelegramAttachment;
 }
 
