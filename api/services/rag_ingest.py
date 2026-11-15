@@ -188,6 +188,7 @@ class RagIngest:
         return page
 
     async def process(self, job: RagImport) -> None:
+        data = None
         try:
             async with asyncio.timeout(1800):
                 if job.resumed and not await self.discard(job.version):
@@ -227,11 +228,11 @@ class RagIngest:
         except (InvalidDocument, RagUnavailable, TimeoutError) as error:
             code = str(error) if str(error) else "import_timeout"
             log.warning("RAG import %s failed (%s)", job.id, code)
-            await self.jobs.fail(job, code)
+            await self.jobs.fail(job, code, len(data) if data is not None else None)
             await self.discard(job.version)
         except Exception as error:
             log.error("RAG import %s failed (%s)", job.id, type(error).__name__)
-            await self.jobs.fail(job, "import_failed")
+            await self.jobs.fail(job, "import_failed", len(data) if data is not None else None)
             await self.discard(job.version)
         else:
             if await self.jobs.publish(job, self.index.key, len(entries), len(data)):

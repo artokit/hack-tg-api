@@ -148,6 +148,7 @@ class GithubSyncRepository:
                 else:
                     self.jobs.requeue(job)
                 self.set_document(job, document)
+                self.jobs.track_import(job)
                 enqueued += 1
             await session.execute(delete(RagGithubSync).where(
                 RagGithubSync.index_key == self.index_key, RagGithubSync.request_id == request_id,

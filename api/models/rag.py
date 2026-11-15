@@ -44,6 +44,7 @@ class RagImport:
     file_id: UUID | None = None
     source_locator: dict[str, str] | None = None
     source_revision: str | None = None
+    import_event_id: UUID | None = None
 
 
 class InvalidDocument(ValueError):

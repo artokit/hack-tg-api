@@ -20,7 +20,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from db.db import Base
 
@@ -137,6 +137,18 @@ class RagGithubSync(Base):
     retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class RagImportEvent(Base):
+    __tablename__ = "rag_import_events"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp())
+    format: Mapped[str | None] = mapped_column(String(4))
+    size_bytes: Mapped[int | None] = mapped_column()
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_ms: Mapped[float | None] = mapped_column(Float)
+    excluded: Mapped[bool] = mapped_column(Boolean, server_default=false())
+
+
 class RagJob(Base):
     __tablename__ = "rag_jobs"
     __table_args__ = (
@@ -144,6 +156,10 @@ class RagJob(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    import_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("rag_import_events.id", name="fk_rag_jobs_import_event_id"),
+    )
+    import_event: Mapped[RagImportEvent | None] = relationship(lazy="raise")
     source_id: Mapped[str] = mapped_column(String(100))
     index_key: Mapped[str] = mapped_column(String(64))
     title: Mapped[str] = mapped_column(String(250))
