@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { Api, GrammyError, HttpError, type InlineKeyboard, InputFile } from 'grammy';
 
@@ -6,6 +7,7 @@ import { recordDelivery } from './telemetry.js';
 import type { DeliveryKind, DeliveryReceipt, DeliveryStatus, TelegramStore } from './telegram-store.js';
 
 export type DeliveryResult = DeliveryReceipt & { startedAt?: number; finishedAt?: number };
+export type RichReplyBlock = { html: string; headingHtml?: string; images?: string[] };
 type ReplyPhoto = { id: string; media: { type: 'photo'; media: InputFile } };
 
 export function splitReply(text: string): string[] {
@@ -33,12 +35,33 @@ async function withRateLimit<T>(send: () => Promise<T>): Promise<T> {
   }
 }
 
-async function loadReplyPhotos(images: string[]): Promise<ReplyPhoto[]> {
-  const files = await Promise.all(images.map((id) => fetchRagImage(id, undefined, true)));
-  return files.flatMap((file, index) => file ? [{
-    id: `photo_${index + 1}`,
-    media: { type: 'photo', media: new InputFile(file, `screenshot-${index + 1}.png`) },
-  }] : []);
+async function loadReplyPhotos(blocks: RichReplyBlock[]): Promise<Map<string, ReplyPhoto>> {
+  const images = [...new Set(blocks.flatMap((block) => block.images ?? []))];
+  const files = await Promise.all(images.map(async (id) => ({ id, file: await fetchRagImage(id, undefined, true) })));
+  const hashes = new Set<string>();
+  const photos = new Map<string, ReplyPhoto>();
+  for (const { id, file } of files) {
+    if (!file) continue;
+    const hash = createHash('sha256').update(file).digest('hex');
+    if (hashes.has(hash)) continue;
+    hashes.add(hash);
+    const number = photos.size + 1;
+    photos.set(id, {
+      id: `photo_${number}`,
+      media: { type: 'photo', media: new InputFile(file, `screenshot-${number}.png`) },
+    });
+  }
+  return photos;
+}
+
+function renderRichBlocks(blocks: RichReplyBlock[], photos?: Map<string, ReplyPhoto>): string {
+  return blocks.map(({ html, headingHtml = '', images = [] }) => {
+    const attachments = images.map((id) => {
+      const photo = photos?.get(id);
+      return photo ? `<img src="tg://photo?id=${photo.id}"/>` : '';
+    }).join('');
+    return html || attachments ? headingHtml + html + attachments : '';
+  }).join('');
 }
 
 export class TelegramOutput {
@@ -83,17 +106,17 @@ export class TelegramOutput {
 
   async send(
     id: string, chatId: string, text: string, kind: DeliveryKind, markdown: boolean,
-    { html, images, keyboard, replaceMessageId }: {
-      html?: string; images?: string[]; keyboard?: InlineKeyboard; replaceMessageId?: number;
+    { blocks = [], keyboard, replaceMessageId }: {
+      blocks?: RichReplyBlock[]; keyboard?: InlineKeyboard; replaceMessageId?: number;
     } = {},
   ): Promise<DeliveryResult> {
-    const media = html && images?.length ? await loadReplyPhotos(images) : [];
+    const photos = blocks.length ? await loadReplyPhotos(blocks) : new Map<string, ReplyPhoto>();
     if (!await this.store.claimDelivery(id, kind)) return this.store.delivery(id);
     const startedAt = Date.now();
     let status: DeliveryStatus = 'sent';
     try {
       if (replaceMessageId === undefined || !await this.replaceMessage(chatId, replaceMessageId, text, keyboard)) {
-        await this.sendMessage(chatId, text, markdown, html, media, keyboard);
+        await this.sendMessage(chatId, text, markdown, blocks, photos, keyboard);
       }
     } catch (error) {
       status = error instanceof GrammyError && error.error_code < 500 ? 'failed' : 'unknown';
@@ -130,19 +153,21 @@ export class TelegramOutput {
   }
 
   private async sendMessage(
-    chatId: string, text: string, markdown: boolean, html: string | undefined, media: ReplyPhoto[],
+    chatId: string, text: string, markdown: boolean, blocks: RichReplyBlock[], photos: Map<string, ReplyPhoto>,
     keyboard?: InlineKeyboard,
   ): Promise<void> {
     const options = keyboard && { reply_markup: keyboard };
-    if (html && media.length) {
-      const photos = media.map(({ id }) => `<img src="tg://photo?id=${id}"/>`).join('');
+    if (photos.size) {
+      const html = renderRichBlocks(blocks, photos);
+      const media = [...photos.values()];
       try {
-        await withRateLimit(() => this.client.sendRichMessage(chatId, { html: html + photos, media }, options));
+        await withRateLimit(() => this.client.sendRichMessage(chatId, { html, media }, options));
         return;
       } catch (error) {
         if (!(error instanceof GrammyError) || ![400, 413].includes(error.error_code)) throw error;
       }
     }
+    const html = renderRichBlocks(blocks);
     if (html || markdown) {
       try {
         await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }, options));
