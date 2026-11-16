@@ -6,7 +6,7 @@ export interface SupportAction {
   sequence: string;
 }
 
-export type SupportButtons = 'feedback' | 'close' | 'operator';
+export type SupportButtons = 'close' | 'operator';
 
 export const supportActionText = {
   y: 'Да, закрыть',
@@ -16,7 +16,6 @@ export const supportActionText = {
 } as const;
 
 const buttonLabels = {
-  feedback: { y: 'Да', n: 'Нет' },
   close: { y: 'Закрыть', c: 'Продолжить' },
   operator: { s: supportActionText.s },
 } as const;

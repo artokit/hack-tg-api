@@ -18,6 +18,7 @@ const source = v.object({
   quote: v.nullable(v.string()),
   visual: v.boolean(),
   image_key: v.nullish(v.string()),
+  file_id: v.nullish(v.string()),
 });
 const part = v.object({
   question: v.string(),
@@ -59,6 +60,7 @@ const evidence = v.object({
   box: v.nullish(v.tuple([v.number(), v.number(), v.number(), v.number()])),
   visual_rank: v.nullish(v.number()),
   image_key: v.nullish(v.string()),
+  file_id: v.nullish(v.string()),
 });
 const selection = v.object({
   parts: v.pipe(v.array(v.object({
@@ -113,7 +115,7 @@ function searchParts(original: string, questions?: string[]): SearchPart[] {
 
 async function search(
   item: SearchPart, original: string, standalone: boolean, includeVisual: boolean, signal: AbortSignal,
-): Promise<Evidence[]> {
+) {
   const requestInstanceId = ragRequestInstanceId();
   const response = await fetch(`${httpUrl('API_URL')}/internal/rag/search`, {
     method: 'POST',
@@ -126,7 +128,30 @@ async function search(
     }),
   });
   if (!response.ok) throw new Error(`RAG search status ${response.status}`);
-  return v.parse(v.array(evidence), await response.json());
+  return {
+    evidence: v.parse(v.array(evidence), await response.json()),
+    snapshot: response.headers.get('X-RAG-Snapshot'),
+  };
+}
+
+async function requestAnswerCache(method: 'POST' | 'PUT', body: object, signal?: AbortSignal) {
+  const path = method === 'POST' ? '/lookup' : '';
+  const timeout = AbortSignal.timeout(750);
+  try {
+    const response = await fetch(`${httpUrl('API_URL')}/internal/rag/answers${path}`, {
+      method,
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      headers: { 'Content-Type': 'application/json', 'X-Bot-Token': required('BOT_API_TOKEN') },
+      body: JSON.stringify(body),
+    });
+    if (method === 'POST' && response.ok) {
+      const cached = v.parse(v.nullable(answer), await response.json());
+      if (cached?.status === 'answered') return cached;
+    }
+  } catch (error) {
+    signal?.throwIfAborted();
+    console.warn('RAG answer cache unavailable', error instanceof Error ? error.name : 'Error');
+  }
 }
 
 function cite(block: Evidence, proposed: string | null | undefined): RagSource | undefined {
@@ -141,7 +166,7 @@ function cite(block: Evidence, proposed: string | null | undefined): RagSource |
   return {
     id: match ? `${block.id}:${match.index}:${match[0].length}` : block.id,
     title: block.title, url, page: block.page, section: block.section,
-    identifiers: block.identifiers, quote, visual, image_key: block.image_key,
+    identifiers: block.identifiers, quote, visual, image_key: block.image_key, file_id: block.file_id,
   };
 }
 
@@ -165,8 +190,8 @@ async function notFoundReply(
 }
 
 async function answerFromDocs(
-  agent: Agent, question: string, questions: string[] | undefined, standalone: boolean,
-  signal?: AbortSignal,
+  agent: Agent, question: string, questions: string[] | undefined,
+  { standalone, cacheAnswer }: { standalone: boolean; cacheAnswer: boolean }, signal?: AbortSignal,
 ): Promise<RagDelivery> {
   let result: RagDelivery;
   try {
@@ -179,14 +204,20 @@ async function answerFromDocs(
         clarification: 'Укажите до шести пунктов за один вопрос.',
       }], sources: [] };
     } else {
+      if (cacheAnswer) {
+        const cached = await requestAnswerCache('POST', {
+          question, request_instance_id: ragRequestInstanceId(),
+        }, operation);
+        if (cached) return cached;
+      }
       const searches = await measureRag('search', async () => {
         const results = await Promise.allSettled(parts.map((item) =>
           search(item, question, standalone, true, operation)));
         if (results.every((item) => item.status === 'rejected')) throw new Error('RAG search unavailable');
         return results;
       });
-      const candidates = searches.map((item) => item.status === 'fulfilled' ? item.value : []);
-      const { images, byPart } = await selectVisuals(agent, parts.map((part, index) =>
+      const candidates = searches.map((item) => item.status === 'fulfilled' ? item.value.evidence : []);
+      const { images, byPart, complete } = await selectVisuals(agent, parts.map((part, index) =>
         ({ index, question: part.question, evidence: candidates[index] }),
       ), operation);
       const maxChars = Math.floor(10000 / Math.max(1, candidates.filter((item) => item.length).length));
@@ -264,6 +295,12 @@ async function answerFromDocs(
         status, parts: answers, sources: [...sources.values()],
         ...(searches.some((search) => search.status === 'rejected') ? { search_incomplete: true } : {}),
       };
+      const firstSearch = searches[0];
+      const snapshot = firstSearch.status === 'fulfilled' && firstSearch.value.snapshot;
+      if (cacheAnswer && status === 'answered' && complete && snapshot && searches.every((search) =>
+        search.status === 'fulfilled' && search.value.snapshot === snapshot)) {
+        await requestAnswerCache('PUT', { question, snapshot, answer: result }, signal);
+      }
       if (status === 'not_found' && searches.every((search) => search.status === 'fulfilled')) {
         const reply = await notFoundReply(agent, question, parts, operation);
         signal?.throwIfAborted();
@@ -278,7 +315,7 @@ async function answerFromDocs(
   return result;
 }
 
-export function answerTool(agent: Agent, question: string, write: (data: RagDelivery) => void) {
+export function answerTool(agent: Agent, question: string, canReadAttachments: boolean, write: (data: RagDelivery) => void) {
   return defineTool({
     name: 'answer_from_docs',
     timeoutMs: 55_000,
@@ -299,7 +336,10 @@ export function answerTool(agent: Agent, question: string, write: (data: RagDeli
       const queries = lookup?.kind === 'split' ? lookup.queries : lookup && [lookup.query];
       const questions = queries?.map(normalizeSearchPhrase);
       const result = await answerFromDocs(
-        agent, question, questions, !lookup || lookup.kind === 'standalone', signal,
+        agent, question, questions, {
+          standalone: !lookup || lookup.kind === 'standalone',
+          cacheAnswer: lookup?.kind === 'standalone' && !canReadAttachments,
+        }, signal,
       );
       write(result);
       return {

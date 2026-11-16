@@ -20,7 +20,10 @@ export type HandoffDraft = v.InferOutput<typeof handoffDraft>;
 const handoffReason = v.picklist(['rag_exhausted', 'operator_requested']);
 
 export const requestedCloseReason = v.picklist(['confirmed', 'user_requested']);
-export const supportAction = v.object({ action: v.literal('close'), reason: requestedCloseReason });
+export const supportAction = v.variant('action', [
+  v.object({ action: v.literal('close'), reason: requestedCloseReason }),
+  v.object({ action: v.literal('offer_close') }),
+]);
 export type SupportAction = v.InferOutput<typeof supportAction>;
 
 const closeReason = v.picklist([

@@ -16,11 +16,13 @@ export interface ActiveRequest {
   phase_sequence: string;
   phase: RequestPhase;
   conversation_only: boolean;
+  prompt_message_id: number | null;
 }
 
 interface Finalization {
   outcome: ClosedRequest;
   finalizer_attempt: number;
+  prompt_message_id: number | null;
 }
 
 export class TelegramRequests {
@@ -28,7 +30,8 @@ export class TelegramRequests {
 
   async active(chatId: string): Promise<ActiveRequest | undefined> {
     const result = await this.pool.query<ActiveRequest>(`
-      SELECT id, chat_id, instance_id, latest_sequence, phase_sequence, phase, conversation_only FROM bars_telegram_requests
+      SELECT id, chat_id, instance_id, latest_sequence, phase_sequence, phase, conversation_only, prompt_message_id
+      FROM bars_telegram_requests
       WHERE bot_id = $1 AND chat_id = $2 AND closed_at IS NULL
     `, [this.botId, chatId]);
     return result.rows[0];
@@ -51,20 +54,22 @@ export class TelegramRequests {
         VALUES ($1, $2, $3, $4, $5, 'technical', $6, $6, true, true, 0, true, clock_timestamp() + interval '5 minutes')
         ON CONFLICT (bot_id, chat_id) WHERE closed_at IS NULL DO UPDATE
         SET latest_sequence = greatest(bars_telegram_requests.latest_sequence, EXCLUDED.latest_sequence)
-        RETURNING id, chat_id, instance_id, latest_sequence, phase_sequence, phase, phase_sent_at, conversation_only
+        RETURNING id, chat_id, instance_id, latest_sequence, phase_sequence, phase, phase_sent_at,
+          conversation_only, prompt_message_id
       ), pinned AS (
         UPDATE bars_telegram_updates
         SET request_id = current_request.id, instance_id = current_request.instance_id,
           request_phase = CASE
-            WHEN current_request.phase = 'feedback' AND received_at < current_request.phase_sent_at THEN 'answer'
+            WHEN current_request.phase = 'feedback' AND NOT $7::boolean
+              AND received_at < current_request.phase_sent_at THEN 'answer'
             WHEN current_request.phase = 'answer' AND current_request.phase_sent_at IS NULL THEN 'technical'
             ELSE current_request.phase END
         FROM current_request WHERE sequence = $6
         RETURNING request_phase AS phase
       )
-      SELECT id, chat_id, instance_id, latest_sequence, phase_sequence, pinned.phase, conversation_only
+      SELECT id, chat_id, instance_id, latest_sequence, phase_sequence, pinned.phase, conversation_only, prompt_message_id
       FROM current_request CROSS JOIN pinned
-    `, [id, this.botId, update.chat_id, `${instancePrefix}:${id}`, update.received_at, update.sequence]);
+    `, [id, this.botId, update.chat_id, `${instancePrefix}:${id}`, update.received_at, update.sequence, !!update.payload.supportAction]);
     return result.rows[0];
   }
 
@@ -84,13 +89,21 @@ export class TelegramRequests {
   }
 
   async advance(
-    request: ActiveRequest, sequence: string, phase: RequestPhase, sentAt: Date,
+    request: ActiveRequest, sequence: string, phase: RequestPhase, sentAt: Date, promptMessageId: number | null = null,
   ): Promise<void> {
-    const seconds = phase === 'answer' ? 120 : 300;
+    const seconds = phase === 'answer' ? 420 : 300;
     await this.pool.query(`
-      UPDATE bars_telegram_requests SET phase = $4, due_at = $5, phase_sent_at = $6, phase_sequence = $3
+      UPDATE bars_telegram_requests
+      SET phase = $4, due_at = $5, phase_sent_at = $6, phase_sequence = $3, prompt_message_id = $7
       WHERE id = $1 AND bot_id = $2 AND phase_sequence <= $3 AND closed_at IS NULL
-    `, [request.id, this.botId, sequence, phase, new Date(sentAt.getTime() + seconds * 1000), sentAt]);
+    `, [request.id, this.botId, sequence, phase, new Date(sentAt.getTime() + seconds * 1000), sentAt, promptMessageId]);
+  }
+
+  async clearPrompt(id: string, messageId: number): Promise<void> {
+    await this.pool.query(`
+      UPDATE bars_telegram_requests SET prompt_message_id = NULL
+      WHERE id = $1 AND bot_id = $2 AND prompt_message_id = $3
+    `, [id, this.botId, messageId]);
   }
 
   async clearDeadline(request: ActiveRequest, sequence: string): Promise<void> {
@@ -102,7 +115,7 @@ export class TelegramRequests {
 
   async due(requestId?: string): Promise<ActiveRequest[]> {
     const result = await this.pool.query<ActiveRequest>(`
-      SELECT id, chat_id, instance_id, latest_sequence, phase_sequence, phase, conversation_only
+      SELECT id, chat_id, instance_id, latest_sequence, phase_sequence, phase, conversation_only, prompt_message_id
       FROM bars_telegram_requests AS request
       WHERE bot_id = $1 AND closed_at IS NULL AND due_at <= clock_timestamp()
         AND ($2::uuid IS NULL OR id = $2)
@@ -166,7 +179,7 @@ export class TelegramRequests {
 
   async finalizations(): Promise<Finalization[]> {
     const result = await this.pool.query<Finalization>(`
-      SELECT outcome, finalizer_attempt FROM bars_telegram_requests
+      SELECT outcome, finalizer_attempt, prompt_message_id FROM bars_telegram_requests
       WHERE bot_id = $1 AND finalized_at IS NULL AND finalizer_due_at <= clock_timestamp()
       ORDER BY finalizer_due_at LIMIT 20
     `, [this.botId]);

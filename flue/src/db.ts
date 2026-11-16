@@ -103,6 +103,7 @@ export default {
       ALTER TABLE bars_telegram_updates ADD COLUMN IF NOT EXISTS request_phase text;
       ALTER TABLE bars_telegram_sessions ADD COLUMN IF NOT EXISTS spam_blocked_until timestamptz;
       ALTER TABLE bars_telegram_deliveries ADD COLUMN IF NOT EXISTS sent_at timestamptz;
+      ALTER TABLE bars_telegram_deliveries ADD COLUMN IF NOT EXISTS message_id integer;
 
       CREATE TABLE IF NOT EXISTS bars_telegram_requests (
         id uuid PRIMARY KEY,
@@ -126,9 +127,12 @@ export default {
       CREATE UNIQUE INDEX IF NOT EXISTS bars_telegram_active_request
         ON bars_telegram_requests (bot_id, chat_id) WHERE closed_at IS NULL;
       ALTER TABLE bars_telegram_requests ADD COLUMN IF NOT EXISTS phase_sequence bigint;
+      ALTER TABLE bars_telegram_requests ADD COLUMN IF NOT EXISTS prompt_message_id integer;
       ALTER TABLE bars_telegram_requests ADD COLUMN IF NOT EXISTS conversation_only boolean NOT NULL DEFAULT false;
       UPDATE bars_telegram_requests SET phase_sequence = latest_sequence
         WHERE closed_at IS NULL AND phase_sequence IS NULL;
+      UPDATE bars_telegram_requests SET due_at = phase_sent_at + interval '7 minutes'
+        WHERE closed_at IS NULL AND phase = 'answer' AND due_at = phase_sent_at + interval '2 minutes';
       CREATE INDEX IF NOT EXISTS bars_telegram_due_request
         ON bars_telegram_requests (bot_id, due_at) WHERE closed_at IS NULL AND due_at IS NOT NULL;
       CREATE INDEX IF NOT EXISTS bars_telegram_due_finalization

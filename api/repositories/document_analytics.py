@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,9 +14,13 @@ class DocumentAnalyticsRepository:
     def __init__(self, session: AsyncSession):
         self._session = session
 
-    async def summary(self, format: DocumentFormat | None, size: DocumentSize | None):
+    async def summary(
+        self, format: DocumentFormat | None, size: DocumentSize | None, from_at: datetime | None, to_at: datetime,
+    ):
         size_bytes = RagImportEvent.size_bytes
-        filters = []
+        filters = [RagImportEvent.accepted_at < to_at]
+        if from_at is not None:
+            filters.append(RagImportEvent.accepted_at >= from_at)
         if format is not None:
             filters.append(RagImportEvent.format == format)
         if size == "up_to_1_mb":

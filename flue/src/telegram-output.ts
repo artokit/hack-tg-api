@@ -1,12 +1,15 @@
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
-import { Api, GrammyError, type InlineKeyboard, InputFile } from 'grammy';
+import { Api, GrammyError, HttpError, type InlineKeyboard, InputFile } from 'grammy';
 
 import { fetchRagImage } from './rag-visual.js';
 import { recordDelivery } from './telemetry.js';
 import type { DeliveryKind, DeliveryReceipt, DeliveryStatus, TelegramStore } from './telegram-store.js';
 
 export type DeliveryResult = DeliveryReceipt & { startedAt?: number; finishedAt?: number };
+export type RichReplyBlock = { html: string; headingHtml?: string; images?: string[] };
 type ReplyPhoto = { id: string; media: { type: 'photo'; media: InputFile } };
+const emptyKeyboard = { inline_keyboard: [] };
 
 export function splitReply(text: string): string[] {
   const parts: string[] = [];
@@ -33,12 +36,43 @@ async function withRateLimit<T>(send: () => Promise<T>): Promise<T> {
   }
 }
 
-async function loadReplyPhotos(images: string[]): Promise<ReplyPhoto[]> {
-  const files = await Promise.all(images.map((id) => fetchRagImage(id, undefined, true)));
-  return files.flatMap((file, index) => file ? [{
-    id: `photo_${index + 1}`,
-    media: { type: 'photo', media: new InputFile(file, `screenshot-${index + 1}.png`) },
-  }] : []);
+async function editWithRetry<T>(edit: () => Promise<T>): Promise<T> {
+  try {
+    return await withRateLimit(edit);
+  } catch (error) {
+    if (!(error instanceof HttpError || (error instanceof GrammyError && error.error_code >= 500))) throw error;
+    await delay(250);
+    return withRateLimit(edit);
+  }
+}
+
+async function loadReplyPhotos(blocks: RichReplyBlock[]): Promise<Map<string, ReplyPhoto>> {
+  const images = [...new Set(blocks.flatMap((block) => block.images ?? []))];
+  const files = await Promise.all(images.map(async (id) => ({ id, file: await fetchRagImage(id, undefined, true) })));
+  const hashes = new Set<string>();
+  const photos = new Map<string, ReplyPhoto>();
+  for (const { id, file } of files) {
+    if (!file) continue;
+    const hash = createHash('sha256').update(file).digest('hex');
+    if (hashes.has(hash)) continue;
+    hashes.add(hash);
+    const number = photos.size + 1;
+    photos.set(id, {
+      id: `photo_${number}`,
+      media: { type: 'photo', media: new InputFile(file, `screenshot-${number}.png`) },
+    });
+  }
+  return photos;
+}
+
+function renderRichBlocks(blocks: RichReplyBlock[], photos?: Map<string, ReplyPhoto>): string {
+  return blocks.map(({ html, headingHtml = '', images = [] }) => {
+    const attachments = images.map((id) => {
+      const photo = photos?.get(id);
+      return photo ? `<img src="tg://photo?id=${photo.id}"/>` : '';
+    }).join('');
+    return html || attachments ? headingHtml + html + attachments : '';
+  }).join('');
 }
 
 export class TelegramOutput {
@@ -82,50 +116,84 @@ export class TelegramOutput {
   }
 
   async send(
-    id: string, chatId: string, text: string, kind: DeliveryKind, markdown: boolean, html?: string, images?: string[],
-    keyboard?: InlineKeyboard,
+    id: string, chatId: string, text: string, kind: DeliveryKind, markdown: boolean,
+    { blocks = [], keyboard, replaceMessageId }: {
+      blocks?: RichReplyBlock[]; keyboard?: InlineKeyboard; replaceMessageId?: number;
+    } = {},
   ): Promise<DeliveryResult> {
-    const media = html && images?.length ? await loadReplyPhotos(images) : [];
+    const photos = blocks.length ? await loadReplyPhotos(blocks) : new Map<string, ReplyPhoto>();
     if (!await this.store.claimDelivery(id, kind)) return this.store.delivery(id);
     const startedAt = Date.now();
     let status: DeliveryStatus = 'sent';
+    let messageId: number | null = null;
     try {
-      await this.sendMessage(chatId, text, markdown, html, media, keyboard);
+      messageId = replaceMessageId !== undefined && await this.replaceMessage(chatId, replaceMessageId, text, keyboard)
+        ? replaceMessageId : await this.sendMessage(chatId, text, markdown, blocks, photos, keyboard);
     } catch (error) {
       status = error instanceof GrammyError && error.error_code < 500 ? 'failed' : 'unknown';
       console.warn('Telegram delivery', status, id, error instanceof Error ? error.name : 'Error');
     }
     const finishedAt = Date.now();
-    const receipt = await this.store.recordDelivery(id, status);
+    const receipt = await this.store.recordDelivery(id, status, keyboard ? messageId : null);
     recordDelivery(kind, status);
     return { ...receipt, startedAt, finishedAt };
   }
 
+  async removeKeyboard(chatId: string, messageId: number): Promise<void> {
+    try {
+      await editWithRetry(() => this.client.editMessageReplyMarkup(chatId, messageId, { reply_markup: emptyKeyboard }));
+    } catch (error) {
+      if (!(error instanceof GrammyError) || ![400, 403].includes(error.error_code)) throw error;
+      if (!error.description.includes('message is not modified')) {
+        console.warn('Telegram keyboard removal rejected', messageId, error.error_code);
+      }
+    }
+  }
+
+  private async replaceMessage(chatId: string, messageId: number, text: string, keyboard?: InlineKeyboard): Promise<boolean> {
+    try {
+      await editWithRetry(() => this.client.editMessageText(
+        chatId, messageId, text, { reply_markup: keyboard ?? emptyKeyboard },
+      ));
+      return true;
+    } catch (error) {
+      if (!(error instanceof GrammyError) || ![400, 403].includes(error.error_code)) throw error;
+      if (error.error_code === 400 && error.description.includes('message is not modified')) return true;
+    }
+    await this.removeKeyboard(chatId, messageId);
+    return false;
+  }
+
   private async sendMessage(
-    chatId: string, text: string, markdown: boolean, html: string | undefined, media: ReplyPhoto[],
+    chatId: string, text: string, markdown: boolean, blocks: RichReplyBlock[], photos: Map<string, ReplyPhoto>,
     keyboard?: InlineKeyboard,
-  ): Promise<void> {
+  ): Promise<number | null> {
     const options = keyboard && { reply_markup: keyboard };
-    if (html && media.length) {
-      const photos = media.map(({ id }) => `<img src="tg://photo?id=${id}"/>`).join('');
+    if (photos.size) {
+      const html = renderRichBlocks(blocks, photos);
+      const media = [...photos.values()];
       try {
-        await withRateLimit(() => this.client.sendRichMessage(chatId, { html: html + photos, media }, options));
-        return;
+        const sent = await withRateLimit(() => this.client.sendRichMessage(chatId, { html, media }, options));
+        return sent.message_id;
       } catch (error) {
         if (!(error instanceof GrammyError) || ![400, 413].includes(error.error_code)) throw error;
       }
     }
+    const html = renderRichBlocks(blocks);
     if (html || markdown) {
       try {
-        await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }, options));
-        return;
+        const sent = await withRateLimit(() => this.client.sendRichMessage(chatId, html ? { html } : { markdown: text }, options));
+        return sent.message_id;
       } catch (error) {
         if (!(error instanceof GrammyError) || error.error_code !== 400) throw error;
       }
     }
     const parts = splitReply(text);
+    let messageId: number | null = null;
     for (const [index, part] of parts.entries()) {
-      await withRateLimit(() => this.client.sendMessage(chatId, part, index === parts.length - 1 ? options : undefined));
+      const sent = await withRateLimit(() => this.client.sendMessage(chatId, part, index === parts.length - 1 ? options : undefined));
+      messageId = sent.message_id;
     }
+    return messageId;
   }
 }

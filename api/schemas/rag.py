@@ -95,8 +95,51 @@ class RagEvidenceRead(BaseModel):
     box: tuple[int, int, int, int] | None = None
     visual_rank: int | None = None
     image_key: str | None = None
+    file_id: UUID | None = None
 
 
 class RagCachedEvidence(RagEvidenceRead):
     file_id: UUID | None
     image_file_id: UUID | None = None
+
+
+class RagAnswerLookup(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    question: str = Field(min_length=1, max_length=4096)
+    request_instance_id: str | None = Field(default=None, min_length=1, max_length=512)
+
+
+class RagAnswerPart(BaseModel):
+    question: str = Field(min_length=1, max_length=4096)
+    status: Literal["supported"]
+    statement: str = Field(min_length=1, max_length=450)
+    source_ids: list[str] = Field(min_length=1, max_length=4)
+    clarification: str
+
+
+class RagAnswerSource(BaseModel):
+    id: str
+    title: str
+    url: str | None
+    page: int | None
+    section: list[str]
+    identifiers: list[str]
+    quote: str | None
+    visual: bool
+    image_key: str | None = None
+    file_id: UUID | None = None
+
+
+class RagAnswerRead(BaseModel):
+    status: Literal["answered"]
+    parts: list[RagAnswerPart] = Field(min_length=1, max_length=6)
+    sources: list[RagAnswerSource] = Field(min_length=1, max_length=24)
+
+
+class RagAnswerWrite(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    question: str = Field(min_length=1, max_length=4096)
+    snapshot: str = Field(pattern=r"^[0-9a-f]{64}$")
+    answer: RagAnswerRead
