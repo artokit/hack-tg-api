@@ -1,0 +1,15 @@
+html, body { margin: 0; background: transparent; }
+.period { box-sizing: border-box; padding: 16px 20px; color: #0f172a; background: #fff; border: 1px solid #e2e8f0; border-radius: 16px; font-family: Arial, sans-serif; }
+.period-main { display: flex; align-items: center; gap: 20px; }
+.period-title { font-size: 15px; font-weight: 700; }
+.period-buttons { display: flex; gap: 6px; padding: 4px; background: #f1f5f9; border-radius: 12px; }
+.period-buttons button { min-width: 82px; padding: 9px 14px; border: 0; border-radius: 9px; background: transparent; color: #475569; font-size: 14px; font-weight: 600; cursor: pointer; }
+.period-buttons button:hover { background: #e2e8f0; }
+.period-buttons button[aria-pressed="true"] { background: #2563eb; color: white; box-shadow: 0 2px 5px #2563eb26; }
+.period-buttons button:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.period-status { margin-top: 9px; color: #64748b; font-size: 11px; line-height: 1.4; }
+@media (max-width: 400px) {
+  .period { padding: 12px; }
+  .period-main { gap: 10px; flex-wrap: wrap; }
+  .period-buttons button { min-width: 72px; padding: 8px 10px; }
+}
